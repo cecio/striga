@@ -1,0 +1,16 @@
+add
+and
+cmovne
+inc
+jmp
+lea
+mov
+nop
+or
+pop
+popfq
+push
+pushfq
+ret
+sub
+xor

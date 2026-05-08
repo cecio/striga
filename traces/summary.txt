@@ -1,0 +1,27 @@
+function=0x00000001400016d0
+return_sentinel=0x000000007fff0000
+
+rcx=1859 steps=7302 rax=0x1 final_rsp=0x10fee0 trace=traces\trace_rcx_1859.txt unique_mnemonics=16
+rcx=2418 steps=7302 rax=0x1 final_rsp=0x10fee0 trace=traces\trace_rcx_2418.txt unique_mnemonics=16
+rcx=1638 steps=7302 rax=0x1 final_rsp=0x10fee0 trace=traces\trace_rcx_1638.txt unique_mnemonics=16
+rcx=299902 steps=7302 rax=0x1 final_rsp=0x10fee0 trace=traces\trace_rcx_299902.txt unique_mnemonics=16
+rcx=29763 steps=7302 rax=0x1 final_rsp=0x10fee0 trace=traces\trace_rcx_29763.txt unique_mnemonics=16
+rcx=1337 steps=7199 rax=0x0 final_rsp=0x10fee0 trace=traces\trace_rcx_1337.txt unique_mnemonics=16
+
+unique_mnemonics:
+add
+and
+cmovne
+inc
+jmp
+lea
+mov
+nop
+or
+pop
+popfq
+push
+pushfq
+ret
+sub
+xor
