@@ -5,7 +5,13 @@ from pathlib import Path
 
 import icicle
 import pefile
-from capstone import CS_ARCH_X86, CS_MODE_64, Cs
+from capstone import (
+    CS_ARCH_X86,
+    CS_MODE_64,
+    CS_MODE_32,
+    Cs,
+    CsInsn,
+)
 
 
 FUNCTION_ADDRESS = 0x00000001400016D0
@@ -45,7 +51,7 @@ class PEmulator:
         self.stack_size = 0x10000
         self.stack_base = self.allocate(self.stack_size)
 
-        self.md = Cs(CS_ARCH_X86, CS_MODE_64)
+        self.md = Cs(CS_ARCH_X86, CS_MODE_64 if arch_name == "x86_64" else CS_MODE_32)
 
     def page_align(self, size: int) -> int:
         return (size + 0xFFF) & ~0xFFF
@@ -161,24 +167,25 @@ class PEmulator:
         self.ic.reg_write("RCX", rcx)
         self.ic.reg_write("RIP", callee)
 
+    def cs_disasm(self, address: int, code: bytes) -> CsInsn:
+        for insn in self.md.disasm(code, address, count=1):  # ty: ignore[missing-argument, invalid-argument-type]
+            return insn
+        raise ValueError(f"Failed to disassemble {code.hex()}@{hex(address)}")
+
     def disassemble_one(self, address: int) -> tuple[str, str, int]:
         # x86-64 instructions are at most 15 bytes. Try shorter reads if close to
         # an unmapped/protected page boundary.
-        last_error = None
         for size in range(15, 0, -1):
             try:
                 code = self.ic.mem_read(address, size)
-            except Exception as exc:  # icicle.MemoryException in normal failure cases
-                last_error = exc
+            except Exception:  # icicle.MemoryException in normal failure cases
                 continue
-            insns = list(self.md.disasm(code, address, count=1))
-            if insns:
-                insn = insns[0]
-                text = insn.mnemonic
-                if insn.op_str:
-                    text += f" {insn.op_str}"
-                return insn.mnemonic, text, insn.size
-        raise RuntimeError(f"Could not disassemble at {address:#x}: {last_error}")
+            insn = self.cs_disasm(address, code)
+            text = insn.mnemonic
+            if insn.op_str:
+                text += f" {insn.op_str}"
+            return insn.mnemonic, text, insn.size
+        raise RuntimeError("disassembly failed")
 
     def trace_call(
         self,

@@ -1,0 +1,33 @@
+.binshld:0000000140017A41                         sub_140017A41   proc near               ; CODE XREF: sub_1400016D0↑j
+.binshld:0000000140017A41 68 8F 67 01 00                          push    1678Fh
+.binshld:0000000140017A46 E9 B5 E5 FF FF                          jmp     sub_140016000
+.binshld:0000000140017A46                         sub_140017A41   endp
+
+.binshld:0000000140016000 41 57                                   push    r15
+.binshld:0000000140016002 41 56                                   push    r14
+.binshld:0000000140016004 41 55                                   push    r13
+.binshld:0000000140016006 41 54                                   push    r12
+.binshld:0000000140016008 41 53                                   push    r11
+.binshld:000000014001600A 41 52                                   push    r10
+.binshld:000000014001600C 41 51                                   push    r9
+.binshld:000000014001600E 41 50                                   push    r8
+.binshld:0000000140016010 55                                      push    rbp
+.binshld:0000000140016011 57                                      push    rdi
+.binshld:0000000140016012 56                                      push    rsi
+.binshld:0000000140016013 52                                      push    rdx
+.binshld:0000000140016014 51                                      push    rcx
+.binshld:0000000140016015 53                                      push    rbx
+.binshld:0000000140016016 50                                      push    rax
+.binshld:0000000140016017 9C                                      pushfq
+.binshld:0000000140016018 49 89 E7                                mov     r15, rsp
+.binshld:000000014001601B 48 81 EC 00 01 00 00                    sub     rsp, 100h
+.binshld:0000000140016022 65 4C 8B 34 25 60 00 00                 mov     r14, gs:60h
+.binshld:0000000140016022 00
+.binshld:000000014001602B 4D 8B 76 10                             mov     r14, [r14+10h]
+.binshld:000000014001602F 4C 89 B4 24 88 00 00 00                 mov     [rsp+180h+var_F8], r14
+.binshld:0000000140016037 45 8B AF 80 00 00 00                    mov     r13d, [r15+80h]
+.binshld:000000014001603E 4D 01 F5                                add     r13, r14
+.binshld:0000000140016041 41 8B 45 00                             mov     eax, [r13+0]
+.binshld:0000000140016045 49 83 C5 04                             add     r13, 4
+.binshld:0000000140016049 4C 01 F0                                add     rax, r14
+.binshld:000000014001604C FF E0                                   jmp     rax
