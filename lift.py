@@ -1,4 +1,6 @@
+import pefile
 from contextlib import contextmanager
+from queue import Queue
 
 from capstone import (
     CS_ARCH_X86,
@@ -11,6 +13,9 @@ from capstone import (
 )
 from capstone.x86 import X86Op
 from capstone.x86_const import (
+    X86_REG_RIP,
+    X86_REG_INVALID,
+    X86_REG_GS,
     X86_INS_ADD,
     X86_INS_AND,
     X86_INS_CMOVNE,
@@ -33,13 +38,17 @@ import llvm
 
 
 class Lifter:
-    def __init__(self, module: llvm.Module):
+    def __init__(self, pe: pefile.PE, module: llvm.Module):
+        self.pe = pe
+        self.image_base = self.pe.OPTIONAL_HEADER.ImageBase  # pyright: ignore[reportOptionalMemberAccess, reportAttributeAccessIssue]
+        self.image_size = self.pe.OPTIONAL_HEADER.SizeOfImage  # pyright: ignore[reportOptionalMemberAccess, reportAttributeAccessIssue]
         self.cs = Cs(CS_ARCH_X86, CS_MODE_64)
         self.cs.detail = True
         self.module = module
         self.context = module.context
         types = self.context.types
         self.types = types
+        self.i64 = self.types.i64
 
         self.reg_sizes = {
             "rax": 64,
@@ -51,7 +60,7 @@ class Lifter:
             "rsp": 64,
             "rbp": 64,
             "r8": 64,
-            "r8": 64,
+            "r9": 64,
             "r10": 64,
             "r11": 64,
             "r12": 64,
@@ -59,6 +68,7 @@ class Lifter:
             "r14": 64,
             "r15": 64,
             "rip": 64,
+            "gsbase": 64,
             "cf": 8,
             "zf": 8,
             "sf": 8,
@@ -76,10 +86,10 @@ class Lifter:
 
     @staticmethod
     @contextmanager
-    def create(module_name="lifted"):
+    def create(pe: pefile.PE):
         with llvm.create_context() as context:
-            with context.create_module(module_name) as module:
-                yield Lifter(module)
+            with context.create_module("") as module:
+                yield Lifter(pe, module)
 
     def cs_disasm(self, address: int, code: bytes) -> CsInsn:
         for insn in self.cs.disasm(code, address, count=1):  # ty: ignore[missing-argument, invalid-argument-type]
@@ -123,9 +133,62 @@ class Lifter:
         return builder.load(self.reg_types[name], reg_ptr)
 
     def _reg_write(self, builder: llvm.Builder, name: str, value: llvm.Value):
-        reg_ptr = self.reg_ptrs[name]
-        # TODO: zero extend/cast?
-        builder.store(value, reg_ptr)
+        extend_regs = {
+            "eax": "rax",
+            "ebx": "rbx",
+            "ecx": "rcx",
+            "edx": "rdx",
+            "esi": "rsi",
+            "edi": "rdi",
+            "esp": "rsp",
+            "ebp": "rbp",
+            "r8d": "r8",
+            "r9d": "r9",
+            "r10d": "r10",
+            "r11d": "r11",
+            "r12d": "r12",
+            "r13d": "r13",
+            "r14d": "r14",
+            "r15d": "r15",
+        }
+        extend_reg = extend_regs.get(name)
+        if extend_reg:
+            reg_ptr = self.reg_ptrs[extend_reg]
+            assert value.type.int_width == 32
+            builder.store(builder.zext(value, self.i64), reg_ptr)
+        else:
+            reg_ptr = self.reg_ptrs[name]
+            assert value.type.int_width == self.reg_sizes[name]
+            builder.store(value, reg_ptr)
+
+    def _operand_mem(
+        self, builder: llvm.Builder, insn: CsInsn, op: X86Op
+    ) -> llvm.Value:
+        assert op.type == CS_OP_MEM
+
+        mem_disp = op.mem.disp
+        base = op.mem.base
+        if base == X86_REG_RIP:
+            mem_disp += insn.address + insn.size
+
+        addr = self.i64.constant(mem_disp)
+
+        if base != X86_REG_INVALID:
+            base_name: str = insn.reg_name(base)  # pyright: ignore[reportAssignmentType]
+            base_value = self._reg_read(builder, base_name)
+            addr = builder.add(addr, base_value)
+
+        index = op.mem.index
+        if index != X86_REG_INVALID:
+            index_name: str = insn.reg_name(index)  # pyright: ignore[reportAssignmentType]
+            index_value = self._reg_read(builder, index_name)
+            scale_value = self.i64.constant(op.mem.scale)
+            addr = builder.add(addr, builder.mul(index_value, scale_value))
+
+        if op.mem.segment == X86_REG_GS:
+            addr = builder.add(addr, self._reg_read(builder, "gsbase"))
+
+        return addr
 
     def _operand_read(
         self, builder: llvm.Builder, insn: CsInsn, index: int
@@ -138,7 +201,8 @@ class Lifter:
             # TODO: is the sign handled correctly?
             return self.types.int_n(op.size * 8).constant(op.imm)
         if op.type == CS_OP_MEM:
-            raise NotImplementedError("CS_OP_MEM")
+            addr = self._operand_mem(builder, insn, op)
+            return self._mem_read(builder, addr, self.types.int_n(op.size * 8))
         assert False, "unreachable"
 
     def _operand_write(
@@ -151,14 +215,37 @@ class Lifter:
         elif op.type == CS_OP_IMM:
             raise ValueError("Cannot write to CS_OP_IMM")
         elif op.type == CS_OP_MEM:
-            raise NotImplementedError("CS_OP_MEM")
+            addr = self._operand_mem(builder, insn, op)
+            assert value.type.int_width == op.size * 8
+            # TODO: narrow the write?
+            self._mem_write(builder, addr, value)
+
+    def _lift_flags(
+        self,
+        builder: llvm.Builder,
+        insn: CsInsn,
+        lhs: llvm.Value,
+        rhs: llvm.Value,
+        result: llvm.Value,
+    ):
+        is_zero = builder.icmp(llvm.IntPredicate.EQ, result, result.type.constant(0))
+        zf = builder.zext(is_zero, self.types.i8)
+        self._reg_write(builder, "zf", zf)
+        # TODO: other flags
 
     def _lift_add(self, builder: llvm.Builder, insn: CsInsn):
-        op2 = self._operand_read(builder, insn, 1)
-        op1 = self._operand_read(builder, insn, 0)
-        result = builder.add(op1, op2)
+        lhs = self._operand_read(builder, insn, 1)
+        rhs = self._operand_read(builder, insn, 0)
+        result = builder.add(lhs, rhs)
         self._operand_write(builder, insn, 0, result)
-        # TODO: flags
+        self._lift_flags(builder, insn, lhs, rhs, result)
+
+    def _lift_sub(self, builder: llvm.Builder, insn: CsInsn):
+        lhs = self._operand_read(builder, insn, 1)
+        rhs = self._operand_read(builder, insn, 0)
+        result = builder.sub(lhs, rhs)
+        self._operand_write(builder, insn, 0, result)
+        self._lift_flags(builder, insn, lhs, rhs, result)
 
     def _mem_write(self, builder: llvm.Builder, addr: llvm.Value, value: llvm.Value):
         assert self.function, "call switch first"
@@ -166,37 +253,82 @@ class Lifter:
         ptr = builder.gep(self.types.i8, memory, [addr])
         builder.store(value, ptr)
 
+    def _mem_read(self, builder: llvm.Builder, addr: llvm.Value, ty: llvm.Type):
+        assert self.function, "call switch first"
+        memory = self.function.get_param(0)
+        ptr = builder.gep(self.types.i8, memory, [addr])
+        return builder.load(ty, ptr)
+
     def _lift_push(self, builder: llvm.Builder, insn: CsInsn):
         value = self._operand_read(builder, insn, 0)
         rsp = self._reg_read(builder, "rsp")
-        rsp_sub = builder.sub(rsp, self.types.i64.constant(8))
+        rsp_sub = builder.sub(rsp, self.i64.constant(8))
         self._reg_write(builder, "rsp", rsp_sub)
         self._mem_write(builder, rsp_sub, value)
 
-    def lift_insn(self, address: int, code: bytes):
-        assert self.function, f"You need to call switch_function first!"
+    def _lift_jmp(self, builder: llvm.Builder, insn: CsInsn) -> list[int | str]:
+        dest = self._operand_read(builder, insn, 0)
+        self._reg_write(builder, "rip", dest)
+        op = insn.operands[0]
+        if op.type == CS_OP_IMM:
+            return [op.imm]
+        if op.type == CS_OP_REG:
+            name: str = insn.reg_name(op.reg)  # pyright: ignore[reportAssignmentType]
+            return [name]
+        raise NotImplementedError("memory jump operand")
+
+    def _lift_pushfq(self, builder: llvm.Builder, insn: CsInsn):
+        zf = self._reg_read(builder, "zf")
+
+        value = builder.shl(builder.zext(zf, self.i64), self.i64.constant(6))
+        rsp = self._reg_read(builder, "rsp")
+        rsp_sub = builder.sub(rsp, self.i64.constant(8))
+        self._reg_write(builder, "rsp", rsp_sub)
+        self._mem_write(builder, rsp_sub, value)
+
+    def _lift_mov(self, builder: llvm.Builder, insn: CsInsn):
+        value = self._operand_read(builder, insn, 1)
+        self._operand_write(builder, insn, 0, value)
+
+    def _lift_bytes(self, address: int, code: bytes) -> list[int | str]:
+        assert self.function, "You need to call switch_function first!"
+
+        insn = self.cs_disasm(address, code)
+        print(hex(address), insn.mnemonic, insn.op_str)
 
         # Create a new block to lift the instruction
         # TODO: how to handle conditional jumps?
         last_block = self.function.last_basic_block
-        insn_block = self.function.append_basic_block(f"lifted_{hex(address)}")
+        insn_block = self.function.append_basic_block(f"lifted_{hex(address)}_{insn.mnemonic}")
         with last_block.create_builder() as builder:
             builder.br(insn_block)
 
-        insn = self.cs_disasm(address, code)
-        print(insn.mnemonic, insn.op_str)
-
         with insn_block.create_builder() as builder:
-            self._reg_write(builder, "rip", self.types.i64.constant(address))
+            self._reg_write(builder, "rip", self.i64.constant(address))
             if insn.id == X86_INS_ADD:
                 self._lift_add(builder, insn)
             elif insn.id == X86_INS_PUSH:
                 self._lift_push(builder, insn)
+            elif insn.id == X86_INS_JMP:
+                return self._lift_jmp(builder, insn)
+            elif insn.id == X86_INS_PUSHFQ:
+                self._lift_pushfq(builder, insn)
+            elif insn.id == X86_INS_MOV:
+                self._lift_mov(builder, insn)
+            elif insn.id == X86_INS_SUB:
+                self._lift_sub(builder, insn)
+
             else:
                 raise NotImplementedError(
                     f"Instruction not implemented: {insn.mnemonic}"
                 )
-        print(insn_block)
+
+        return [address + insn.size]
+
+    def lift_va(self, va: int):
+        assert va >= self.image_base and va < self.image_base + self.image_size
+        code = self.pe.get_data(va - self.image_base, 15)
+        return self._lift_bytes(va, code)
 
     def lift_end(self):
         assert self.function
@@ -205,16 +337,33 @@ class Lifter:
 
 
 def main():
-    with Lifter.create() as lifter:
-        lifter.switch_function("handler1")
-        lifter.switch_function("handler1")
-        lifter.lift_insn(0x14001603E, bytes.fromhex("4D 01 F5"))
-        lifter.lift_insn(0x140017A41, bytes.fromhex("68 8F 67 01 00"))
+    pe = pefile.PE("crackme.exe")
+    with Lifter.create(pe) as lifter:
+        lifter.switch_function("vm")
+
+        queue: Queue[int | str] = Queue()
+        queue.put(0x140017A41)
+        visited = set()
+        while not queue.empty():
+            addr = queue.get()
+            if addr in visited:
+                continue
+
+            if isinstance(addr, str):
+                assert queue.empty()
+                break
+
+            successors = lifter.lift_va(addr)
+            for successor in successors:
+                if successor in visited:
+                    continue
+                queue.put(successor)
 
         lifter.lift_end()
 
-        lifter.module.verify_or_raise()
+        print()
         print(lifter.module)
+        lifter.module.verify_or_raise()
     pass
 
 

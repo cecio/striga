@@ -1,16 +1,16 @@
-add
-and
-cmovne
-inc
-jmp
-lea
-mov
-nop
-or
-pop
-popfq
-push
-pushfq
-ret
-sub
-xor
+[x] add
+[ ] and
+[ ] cmovne
+[ ] inc
+[ ] jmp
+[ ] lea
+[ ] mov
+[ ] nop
+[ ] or
+[ ] pop
+[ ] popfq
+[x] push
+[ ] pushfq
+[ ] ret
+[ ] sub
+[ ] xor
