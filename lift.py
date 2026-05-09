@@ -97,7 +97,8 @@ class Semantics:
             self.subregs[r32] = (r64, 32, 0)
             self.subregs[r16] = (r64, 16, 0)
             self.subregs[r8l] = (r64, 8, 0)
-            self.subregs[r8h] = (r64, 8, 1)
+            if r8h:
+                self.subregs[r8h] = (r64, 8, 8)
 
         self.reg_sizes = {
             **{gpr.r64: 64 for gpr in GPRS},
@@ -120,13 +121,10 @@ class Semantics:
         self.state_ty = state_ty
         self.lifted_ty = types.function(types.void, [types.ptr, types.ptr])
 
+        helper_ty = types.function(types.void, [types.i64])
         # TODO: update llvm-nanobind to add module.get_or_insert_function
-        indirect_jmp = module.get_function("indirect_jmp")
-        if indirect_jmp is None:
-            indirect_jmp = module.add_function(
-                "indirect_jmp", types.function(types.void, [types.i64])
-            )
-        self.indirect_jmp = indirect_jmp
+        self.indirect_jmp = self.get_or_insert_helper("indirect_jmp", helper_ty)
+        self.ret_handler = self.get_or_insert_helper("ret", helper_ty)
 
         # Set per function lifting
         self.insn_blocks: dict[int, BasicBlock] = {}
@@ -137,11 +135,28 @@ class Semantics:
         self.ir: Builder
         self.insn: CsInsn
 
+    def get_or_insert_helper(self, name: str, ty: Type) -> Function:
+        """Declare a user-provided control-transfer helper if needed."""
+        fn = self.module.get_function(name)
+        if fn is None:
+            fn = self.module.add_function(name, ty)
+        return fn
+
     def const64(self, val: int, sign_extend=False):
         return self.const_n(val, 64, sign_extend)
 
     def const_n(self, val: int, bits: int, sign_extend=False):
         return self.types.int_n(bits).constant(val, sign_extend)
+
+    def resize_int(self, value: Value, ty: Type, *, sign_extend=False) -> Value:
+        """Resize an integer value to ``ty`` with trunc/zext/sext as needed."""
+        if value.type == ty:
+            return value
+        if value.type.int_width > ty.int_width:
+            return self.ir.trunc(value, ty)
+        if sign_extend:
+            return self.ir.sext(value, ty)
+        return self.ir.zext(value, ty)
 
     def begin(self, address: int) -> Function:
         name = f"lifted_{hex(address)}"
@@ -164,18 +179,24 @@ class Semantics:
         else:
             self.function = fn
             self.reg_ptrs = {}
+            self.insn_blocks = {}
             entry = fn.entry_block
-            assert fn.last_basic_block == entry
             assert entry.name == "initialize", (
                 "unexpected basic block for lifted function"
             )
+            for block in fn.basic_blocks:
+                if block.name.startswith("insn_"):
+                    self.insn_blocks[int(block.name.removeprefix("insn_"), 16)] = block
             for insn in entry.instructions:
                 if (
                     insn.opcode == Opcode.GetElementPtr
                     and insn.gep_source_element_type == self.state_ty
                 ):
                     assert insn.name in self.reg_types, "unexpected GEP"
-                self.reg_ptrs[insn.name] = insn
+                    self.reg_ptrs[insn.name] = insn
+            assert self.reg_ptrs.keys() == self.reg_types.keys(), (
+                "failed to reconstruct register pointers"
+            )
         return self.function
 
     def cs_disasm(self, address: int, code: bytes) -> CsInsn:
@@ -193,20 +214,26 @@ class Semantics:
         assert block.function == self.function
         return block
 
-    def lift_bytes(self, address: int, code: bytes) -> list[Successor]:
+    def lift_bytes(self, address: int, code: bytes):
         insn = self.cs_disasm(address, code)
         if self.verbose:
             print(";", hex(insn.address), insn.mnemonic, insn.op_str)
 
-        # Get or create — the block may already exist as a branch target
+        # Get or create - the block may already exist as a branch target.
+        # If the block is already populated, this function has already been
+        # lifted in this module; do not append a second terminator.
         block = self.get_or_create_block(address)
         assert block.first_instruction
         if block.first_instruction.opcode == Opcode.Unreachable:
             block.first_instruction.erase_from_parent()
+        else:
+            return []
 
         with block.create_builder() as ir:
             self.ir = ir
             self.insn = insn
+            # Intentional: RIP records the current instruction, not the next PC.
+            # Each lifted instruction owns writing its own address.
             self.reg_write("rip", self.const64(address))
             handler = _semantics.get(insn.mnemonic)
             if not handler:
@@ -214,7 +241,7 @@ class Semantics:
 
             successors = handler(self)
             if successors is None:
-                # Linear fallthrough — handler didn't emit a terminator
+                # Linear fallthrough - handler didn't emit a terminator.
                 fallthrough = address + insn.size
                 ir.br(self.get_or_create_block(fallthrough))
                 successors = [Successor(address, self.const64(fallthrough))]
@@ -227,28 +254,39 @@ class Semantics:
 
     def reg_read(self, name: str):
         reg_ptr = self.reg_ptrs.get(name)
-        if reg_ptr is None:
-            name, size, offset = self.subregs[name]
-            assert offset == 0, "r8h not supported"
-            reg_ptr = self.reg_ptrs[name]
-            reg_ty = self.types.int_n(size)
-        else:
-            reg_ty = self.reg_types[name]
-        return self.ir.load(reg_ty, reg_ptr)
+        if reg_ptr is not None:
+            return self.ir.load(self.reg_types[name], reg_ptr)
+
+        full_name, size, bit_offset = self.subregs[name]
+        full = self.ir.load(self.reg_types[full_name], self.reg_ptrs[full_name])
+        if bit_offset:
+            full = self.ir.lshr(full, self.const64(bit_offset))
+        return self.ir.trunc(full, self.types.int_n(size))
 
     def reg_write(self, name: str, value: Value):
         reg_ptr = self.reg_ptrs.get(name)
-        if reg_ptr is None:
-            name, size, offset = self.subregs[name]
-            assert offset == 0, "r8h not supported"
-            reg_ptr = self.reg_ptrs[name]
-            assert value.type.int_width == size
-            if size == 32:
-                value = self.ir.zext(value, self.i64)
-            # TODO: probably a full-width reconstructed store is better
-        else:
+        if reg_ptr is not None:
             assert value.type.int_width == self.reg_sizes[name]
-        self.ir.store(value, reg_ptr)
+            self.ir.store(value, reg_ptr)
+            return
+
+        full_name, size, bit_offset = self.subregs[name]
+        assert value.type.int_width == size
+        full_ptr = self.reg_ptrs[full_name]
+
+        # x86-64 writes to r32 zero-extend into the enclosing r64 register.
+        if size == 32:
+            self.ir.store(self.ir.zext(value, self.i64), full_ptr)
+            return
+
+        # Narrow writes update only the addressed bits of the full register.
+        mask = ((1 << size) - 1) << bit_offset
+        full = self.ir.load(self.i64, full_ptr)
+        cleared = self.ir.and_(full, self.const64(~mask))
+        widened = self.ir.zext(value, self.i64)
+        if bit_offset:
+            widened = self.ir.shl(widened, self.const64(bit_offset))
+        self.ir.store(self.ir.or_(cleared, widened), full_ptr)
 
     def op_mem(self, op: X86Op) -> Value:
         assert op.type == CS_OP_MEM
@@ -306,12 +344,15 @@ class Semantics:
     def mem_write(self, addr: Value, value: Value):
         memory = self.function.get_param(0)
         ptr = self.ir.gep(self.types.i8, memory, [addr])
-        self.ir.store(value, ptr)
+        store = self.ir.store(value, ptr)
+        store.set_inst_alignment(1)
 
     def mem_read(self, addr: Value, ty: Type):
         memory = self.function.get_param(0)
         ptr = self.ir.gep(self.types.i8, memory, [addr])
-        return self.ir.load(ty, ptr)
+        load = self.ir.load(ty, ptr)
+        load.set_inst_alignment(1)
+        return load
 
     def lift_flags(
         self,
@@ -322,15 +363,13 @@ class Semantics:
         is_zero = self.ir.icmp(IntPredicate.EQ, result, result.type.constant(0))
         zf = self.ir.zext(is_zero, self.types.i8)
         self.reg_write("zf", zf)
-        # TODO: other flags are not used in the sample
+        # TODO: implement full x86 flag semantics. This is intentionally limited
+        # to ZF for now to avoid bloating the target-specific lifted IR.
 
 
 def binop(sem: Semantics, opcode: Opcode):
     dst = sem.op_read(0)
-    src = sem.op_read(1)
-    if dst.type != src.type:
-        # TODO: hack?
-        src = sem.ir.zext(src, dst.type)
+    src = sem.resize_int(sem.op_read(1), dst.type)
     result = sem.ir.binop(opcode, dst, src)
     sem.op_write(0, result)
     sem.lift_flags(dst, src, result)
@@ -363,13 +402,30 @@ def or_(sem: Semantics):
 
 @semantic
 def shl(sem: Semantics):
-    binop(sem, Opcode.Shl)
+    dst = sem.op_read(0)
+    count = sem.resize_int(sem.op_read(1), dst.type)
+
+    # x86 masks shift counts before executing the shift. LLVM shifts by a
+    # count >= the bit width are poison, so narrow operands need an extra guard.
+    width = dst.type.int_width
+    count_mask = 63 if width == 64 else 31
+    count = sem.ir.and_(count, dst.type.constant(count_mask))
+    if width < 32:
+        in_range = sem.ir.icmp(IntPredicate.ULT, count, dst.type.constant(width))
+        safe_count = sem.ir.select(in_range, count, dst.type.constant(0))
+        shifted = sem.ir.shl(dst, safe_count)
+        result = sem.ir.select(in_range, shifted, dst.type.constant(0))
+    else:
+        result = sem.ir.shl(dst, count)
+
+    sem.op_write(0, result)
+    sem.lift_flags(dst, count, result)
 
 
 @semantic
 def inc(sem: Semantics):
     dst = sem.op_read(0)
-    src = sem.const64(1)
+    src = dst.type.constant(1)
     result = sem.ir.add(dst, src)
     sem.op_write(0, result)
     sem.lift_flags(dst, src, result)
@@ -432,13 +488,14 @@ def mov(sem: Semantics):
 @semantic
 def lea(sem: Semantics):
     src = sem.op_mem(sem.insn.operands[1])
-    sem.op_write(0, src)
+    dst_ty = sem.types.int_n(sem.insn.operands[0].size * 8)
+    sem.op_write(0, sem.resize_int(src, dst_ty))
 
 
 @semantic
 def cmp(sem: Semantics):
     dst = sem.op_read(0)
-    src = sem.op_read(1)
+    src = sem.resize_int(sem.op_read(1), dst.type)
     result = sem.ir.sub(dst, src)
     sem.lift_flags(dst, src, result)
 
@@ -453,16 +510,17 @@ def flag_cond(sem: Semantics, flag_name: str, flag_expected: bool):
 @semantic
 def cmovne(sem: Semantics):
     cond = flag_cond(sem, "zf", False)
-    value = sem.ir.select(cond, sem.op_read(1), sem.op_read(0))
-    sem.op_write(0, value)
+    old_value = sem.op_read(0)
+    new_value = sem.resize_int(sem.op_read(1), old_value.type)
+    sem.op_write(0, sem.ir.select(cond, new_value, old_value))
 
 
 def jcc(sem: Semantics, flag_name: str, flag_expected: bool):
-
     brtrue = sem.insn.operands[0].imm
     brfalse = sem.insn.address + sem.insn.size
+    cond = flag_cond(sem, flag_name, flag_expected)
     sem.ir.cond_br(
-        flag_cond(sem, flag_name, flag_expected),
+        cond,
         sem.get_or_create_block(brtrue),
         sem.get_or_create_block(brfalse),
     )
@@ -475,17 +533,17 @@ def jcc(sem: Semantics, flag_name: str, flag_expected: bool):
 
 
 @semantic
-def je(sem: Semantics) -> list[Successor]:
+def je(sem: Semantics):
     return jcc(sem, "zf", True)
 
 
 @semantic
-def jne(sem: Semantics) -> list[Successor]:
+def jne(sem: Semantics):
     return jcc(sem, "zf", False)
 
 
 @semantic
-def jmp(sem: Semantics) -> list[Successor]:
+def jmp(sem: Semantics):
     dst = sem.op_read(0)
     if dst.is_constant:
         sem.ir.br(sem.get_or_create_block(dst.const_zext_value))
@@ -497,8 +555,13 @@ def jmp(sem: Semantics) -> list[Successor]:
 
 @semantic
 def ret(sem: Semantics):
+    dst = pop_impl(sem)
+    if sem.insn.operands:
+        rsp = sem.reg_read("rsp")
+        sem.reg_write("rsp", sem.ir.add(rsp, sem.const64(sem.insn.operands[0].imm)))
+    sem.ir.call(sem.ret_handler, [dst])
     sem.ir.ret_void()
-    return []
+    return [Successor(sem.insn.address, dst)]
 
 
 @semantic
@@ -514,6 +577,8 @@ def lift(module: Module, pe: PE, start: int, *, verbose=True):
 
     queue: Queue[Successor] = Queue()
     queue.put(Successor(0, sem.const64(start)))
+    # Keep destinations as LLVM Values instead of splitting constants into ints.
+    # This keeps the worklist uniform and matches later slicing/data-flow uses.
     visited: set[Value] = set()
     while not queue.empty():
         src, dst = queue.get()
@@ -521,7 +586,7 @@ def lift(module: Module, pe: PE, start: int, *, verbose=True):
         if not dst.is_constant:
             if sem.verbose:
                 print(f"; non-constant branch destination: {hex(src)} -> {dst}")
-            # TODO: jmp reg
+            # TODO: recover jump tables / returned-to callers
             continue
 
         if dst in visited:
