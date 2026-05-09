@@ -132,9 +132,15 @@ class Semantics:
         self.lifted_ty = types.function(types.void, [types.ptr, types.ptr])
 
         helper_ty = types.function(types.void, [types.i64])
+        undefined_flag_ty = types.function(types.i8, [types.i64])
         # TODO: update llvm-nanobind to add module.get_or_insert_function
         self.indirect_jmp = self.get_or_insert_helper("indirect_jmp", helper_ty)
+        self.call_handler = self.get_or_insert_helper("call", helper_ty)
         self.ret_handler = self.get_or_insert_helper("ret", helper_ty)
+        self.undefined_flags = {
+            name: self.get_or_insert_helper(f"undefined_{name}", undefined_flag_ty)
+            for name in RFLAGS_BITS
+        }
 
         # Set per function lifting
         self.insn_blocks: dict[int, BasicBlock] = {}
@@ -385,15 +391,21 @@ class Semantics:
         new_value = self.bool_to_flag(value)
         self.reg_write(name, self.ir.select(cond, new_value, old_value))
 
-    def undef_bool(self) -> Value:
-        """Return a stable arbitrary bit for architecturally undefined flags."""
-        return self.ir.freeze(self.types.i1.undef())
+    def undefined_flag(self, name: str) -> Value:
+        """Call the per-flag helper for architecturally undefined flags."""
+        helper = self.undefined_flags[name]
+        return self.ir.call(helper, [self.const64(self.insn.address)])
+
+    def undefined_flag_bool(self, name: str) -> Value:
+        return self.ir.icmp(
+            IntPredicate.NE, self.undefined_flag(name), self.const_n(0, 8)
+        )
 
     def write_undef_flag(self, name: str):
-        self.write_flag(name, self.undef_bool())
+        self.write_flag(name, self.undefined_flag(name))
 
     def write_undef_flag_if(self, cond: Value, name: str):
-        self.write_flag_if(cond, name, self.undef_bool())
+        self.write_flag_if(cond, name, self.undefined_flag(name))
 
     def result_is_zero(self, result: Value) -> Value:
         return self.ir.icmp(IntPredicate.EQ, result, result.type.constant(0))
@@ -494,13 +506,68 @@ class Semantics:
         cf_shift = self.ir.sub(count.type.constant(width), safe_count)
         cf = self.ir.trunc(self.ir.lshr(lhs, cf_shift), self.types.i1)
         if width < 32:
-            cf = self.ir.select(count_in_range, cf, self.undef_bool())
+            cf = self.ir.select(count_in_range, cf, self.undefined_flag_bool("cf"))
         self.write_flag_if(count_nonzero, "cf", cf)
 
         of_for_one = self.ir.xor(
             self.result_sign_bit(lhs), self.result_sign_bit(result)
         )
-        of = self.ir.select(count_one, of_for_one, self.undef_bool())
+        of = self.ir.select(count_one, of_for_one, self.undefined_flag_bool("of"))
+        self.write_flag_if(count_nonzero, "of", of)
+
+        self.write_flag_if(count_nonzero, "pf", self.result_parity_even(result))
+        self.write_undef_flag_if(count_nonzero, "af")
+        self.write_flag_if(count_nonzero, "zf", self.result_is_zero(result))
+        self.write_flag_if(count_nonzero, "sf", self.result_sign_bit(result))
+
+    def write_shr_flags(self, lhs: Value, count: Value, result: Value):
+        width = lhs.type.int_width
+        count_nonzero = self.ir.icmp(IntPredicate.NE, count, count.type.constant(0))
+        count_one = self.ir.icmp(IntPredicate.EQ, count, count.type.constant(1))
+        if width < 32:
+            count_in_range = self.ir.icmp(
+                IntPredicate.ULT, count, count.type.constant(width)
+            )
+        else:
+            count_in_range = self.const_n(1, 1)
+
+        cf_defined = self.ir.and_(count_nonzero, count_in_range)
+        safe_count = self.ir.select(cf_defined, count, count.type.constant(1))
+        cf_shift = self.ir.sub(safe_count, count.type.constant(1))
+        cf = self.ir.trunc(self.ir.lshr(lhs, cf_shift), self.types.i1)
+        if width < 32:
+            cf = self.ir.select(count_in_range, cf, self.undefined_flag_bool("cf"))
+        self.write_flag_if(count_nonzero, "cf", cf)
+
+        of = self.ir.select(
+            count_one, self.result_sign_bit(lhs), self.undefined_flag_bool("of")
+        )
+        self.write_flag_if(count_nonzero, "of", of)
+
+        self.write_flag_if(count_nonzero, "pf", self.result_parity_even(result))
+        self.write_undef_flag_if(count_nonzero, "af")
+        self.write_flag_if(count_nonzero, "zf", self.result_is_zero(result))
+        self.write_flag_if(count_nonzero, "sf", self.result_sign_bit(result))
+
+    def write_sar_flags(self, lhs: Value, count: Value, result: Value):
+        width = lhs.type.int_width
+        count_nonzero = self.ir.icmp(IntPredicate.NE, count, count.type.constant(0))
+        count_one = self.ir.icmp(IntPredicate.EQ, count, count.type.constant(1))
+        if width < 32:
+            count_in_range = self.ir.icmp(
+                IntPredicate.ULT, count, count.type.constant(width)
+            )
+        else:
+            count_in_range = self.const_n(1, 1)
+
+        safe_count = self.ir.select(count_in_range, count, count.type.constant(1))
+        cf_shift = self.ir.sub(safe_count, count.type.constant(1))
+        shifted_out = self.ir.trunc(self.ir.lshr(lhs, cf_shift), self.types.i1)
+        cf = self.ir.select(count_in_range, shifted_out, self.result_sign_bit(lhs))
+        self.write_flag_if(count_nonzero, "cf", cf)
+
+        false = self.const_n(0, 1)
+        of = self.ir.select(count_one, false, self.undefined_flag_bool("of"))
         self.write_flag_if(count_nonzero, "of", of)
 
         self.write_flag_if(count_nonzero, "pf", self.result_parity_even(result))
@@ -568,16 +635,20 @@ def or_(sem: Semantics):
     logical_binop(sem, Opcode.Or)
 
 
+def masked_shift_count(sem: Semantics, value: Value, width: int) -> Value:
+    count = sem.resize_int(value, sem.types.int_n(width))
+    count_mask = 63 if width == 64 else 31
+    return sem.ir.and_(count, count.type.constant(count_mask))
+
+
 @semantic
 def shl(sem: Semantics):
     dst = sem.op_read(0)
-    count = sem.resize_int(sem.op_read(1), dst.type)
+    width = dst.type.int_width
+    count = masked_shift_count(sem, sem.op_read(1), width)
 
     # x86 masks shift counts before executing the shift. LLVM shifts by a
     # count >= the bit width are poison, so narrow operands need an extra guard.
-    width = dst.type.int_width
-    count_mask = 63 if width == 64 else 31
-    count = sem.ir.and_(count, dst.type.constant(count_mask))
     if width < 32:
         in_range = sem.ir.icmp(IntPredicate.ULT, count, dst.type.constant(width))
         safe_count = sem.ir.select(in_range, count, dst.type.constant(0))
@@ -591,6 +662,45 @@ def shl(sem: Semantics):
 
 
 @semantic
+def shr(sem: Semantics):
+    dst = sem.op_read(0)
+    width = dst.type.int_width
+    count = masked_shift_count(sem, sem.op_read(1), width)
+
+    if width < 32:
+        in_range = sem.ir.icmp(IntPredicate.ULT, count, dst.type.constant(width))
+        safe_count = sem.ir.select(in_range, count, dst.type.constant(0))
+        shifted = sem.ir.lshr(dst, safe_count)
+        result = sem.ir.select(in_range, shifted, dst.type.constant(0))
+    else:
+        result = sem.ir.lshr(dst, count)
+
+    sem.op_write(0, result)
+    sem.write_shr_flags(dst, count, result)
+
+
+@semantic
+def sar(sem: Semantics):
+    dst = sem.op_read(0)
+    width = dst.type.int_width
+    count = masked_shift_count(sem, sem.op_read(1), width)
+
+    if width < 32:
+        in_range = sem.ir.icmp(IntPredicate.ULT, count, dst.type.constant(width))
+        safe_count = sem.ir.select(in_range, count, dst.type.constant(0))
+        shifted = sem.ir.ashr(dst, safe_count)
+        sign_filled = sem.ir.select(
+            sem.result_sign_bit(dst), dst.type.constant(-1), dst.type.constant(0)
+        )
+        result = sem.ir.select(in_range, shifted, sign_filled)
+    else:
+        result = sem.ir.ashr(dst, count)
+
+    sem.op_write(0, result)
+    sem.write_sar_flags(dst, count, result)
+
+
+@semantic
 def inc(sem: Semantics):
     dst = sem.op_read(0)
     src = dst.type.constant(1)
@@ -599,11 +709,287 @@ def inc(sem: Semantics):
     sem.write_add_flags(dst, src, result, write_cf=False)
 
 
+def write_undef_arith_flags(sem: Semantics):
+    sem.write_undef_flag("cf")
+    sem.write_undef_flag("of")
+    sem.write_undef_flag("sf")
+    sem.write_undef_flag("zf")
+    sem.write_undef_flag("af")
+    sem.write_undef_flag("pf")
+
+
+def write_mul_flags(sem: Semantics, overflow: Value):
+    sem.write_flag("cf", overflow)
+    sem.write_flag("of", overflow)
+    sem.write_undef_flag("sf")
+    sem.write_undef_flag("zf")
+    sem.write_undef_flag("af")
+    sem.write_undef_flag("pf")
+
+
+def signed_wide_mul(sem: Semantics, lhs: Value, rhs: Value) -> tuple[Value, Value]:
+    wide_ty = sem.types.int_n(lhs.type.int_width * 2)
+    wide_lhs = sem.resize_int(lhs, wide_ty, sign_extend=True)
+    wide_rhs = sem.resize_int(rhs, wide_ty, sign_extend=True)
+    product = sem.ir.mul(wide_lhs, wide_rhs)
+    truncated = sem.ir.trunc(product, lhs.type)
+    overflow = sem.ir.icmp(
+        IntPredicate.NE,
+        sem.ir.sext(truncated, wide_ty),
+        product,
+    )
+    return product, overflow
+
+
+def unsigned_wide_mul(sem: Semantics, lhs: Value, rhs: Value) -> tuple[Value, Value]:
+    wide_ty = sem.types.int_n(lhs.type.int_width * 2)
+    wide_lhs = sem.resize_int(lhs, wide_ty)
+    wide_rhs = sem.resize_int(rhs, wide_ty)
+    product = sem.ir.mul(wide_lhs, wide_rhs)
+    truncated = sem.ir.trunc(product, lhs.type)
+    overflow = sem.ir.icmp(
+        IntPredicate.NE,
+        sem.ir.zext(truncated, wide_ty),
+        product,
+    )
+    return product, overflow
+
+
+@semantic
+def imul(sem: Semantics):
+    if len(sem.insn.operands) == 1:
+        src = sem.op_read(0)
+        width = src.type.int_width
+        match width:
+            case 8:
+                lhs = sem.reg_read("al")
+                product, overflow = signed_wide_mul(sem, lhs, src)
+                sem.reg_write("ax", product)
+            case 16:
+                lhs = sem.reg_read("ax")
+                product, overflow = signed_wide_mul(sem, lhs, src)
+                sem.reg_write("ax", sem.ir.trunc(product, sem.types.i16))
+                sem.reg_write(
+                    "dx",
+                    sem.ir.trunc(
+                        sem.ir.lshr(product, sem.const_n(16, 32)), sem.types.i16
+                    ),
+                )
+            case 32:
+                lhs = sem.reg_read("eax")
+                product, overflow = signed_wide_mul(sem, lhs, src)
+                sem.reg_write("eax", sem.ir.trunc(product, sem.types.i32))
+                sem.reg_write(
+                    "edx",
+                    sem.ir.trunc(
+                        sem.ir.lshr(product, sem.const_n(32, 64)), sem.types.i32
+                    ),
+                )
+            case 64:
+                lhs = sem.reg_read("rax")
+                product, overflow = signed_wide_mul(sem, lhs, src)
+                sem.reg_write("rax", sem.ir.trunc(product, sem.i64))
+                sem.reg_write(
+                    "rdx",
+                    sem.ir.trunc(sem.ir.lshr(product, sem.const_n(64, 128)), sem.i64),
+                )
+            case _:
+                raise NotImplementedError(f"imul width {width}")
+        write_mul_flags(sem, overflow)
+        return
+
+    if len(sem.insn.operands) == 2:
+        lhs = sem.op_read(0)
+        rhs = sem.resize_int(sem.op_read(1), lhs.type, sign_extend=True)
+    elif len(sem.insn.operands) == 3:
+        lhs = sem.resize_int(
+            sem.op_read(1), sem.types.int_n(sem.insn.operands[0].size * 8)
+        )
+        rhs = sem.resize_int(sem.op_read(2), lhs.type, sign_extend=True)
+    else:
+        raise NotImplementedError("imul operand count")
+
+    product, overflow = signed_wide_mul(sem, lhs, rhs)
+    sem.op_write(0, sem.ir.trunc(product, lhs.type))
+    write_mul_flags(sem, overflow)
+
+
+@semantic
+def mul(sem: Semantics):
+    src = sem.op_read(0)
+    width = src.type.int_width
+    match width:
+        case 8:
+            lhs = sem.reg_read("al")
+            product, overflow = unsigned_wide_mul(sem, lhs, src)
+            sem.reg_write("ax", product)
+        case 16:
+            lhs = sem.reg_read("ax")
+            product, overflow = unsigned_wide_mul(sem, lhs, src)
+            sem.reg_write("ax", sem.ir.trunc(product, sem.types.i16))
+            sem.reg_write(
+                "dx",
+                sem.ir.trunc(sem.ir.lshr(product, sem.const_n(16, 32)), sem.types.i16),
+            )
+        case 32:
+            lhs = sem.reg_read("eax")
+            product, overflow = unsigned_wide_mul(sem, lhs, src)
+            sem.reg_write("eax", sem.ir.trunc(product, sem.types.i32))
+            sem.reg_write(
+                "edx",
+                sem.ir.trunc(sem.ir.lshr(product, sem.const_n(32, 64)), sem.types.i32),
+            )
+        case 64:
+            lhs = sem.reg_read("rax")
+            product, overflow = unsigned_wide_mul(sem, lhs, src)
+            sem.reg_write("rax", sem.ir.trunc(product, sem.i64))
+            sem.reg_write(
+                "rdx", sem.ir.trunc(sem.ir.lshr(product, sem.const_n(64, 128)), sem.i64)
+            )
+        case _:
+            raise NotImplementedError(f"mul width {width}")
+    write_mul_flags(sem, overflow)
+
+
+def divmod_wide(
+    sem: Semantics, high: Value, low: Value, divisor: Value, *, signed=False
+):
+    wide_ty = sem.types.int_n(divisor.type.int_width * 2)
+    wide_high = sem.resize_int(high, wide_ty)
+    wide_low = sem.resize_int(low, wide_ty)
+    dividend = sem.ir.or_(
+        sem.ir.shl(wide_high, wide_ty.constant(divisor.type.int_width)), wide_low
+    )
+    wide_divisor = sem.resize_int(divisor, wide_ty, sign_extend=signed)
+    if signed:
+        return sem.ir.sdiv(dividend, wide_divisor), sem.ir.srem(dividend, wide_divisor)
+    return sem.ir.udiv(dividend, wide_divisor), sem.ir.urem(dividend, wide_divisor)
+
+
+@semantic
+def div(sem: Semantics):
+    src = sem.op_read(0)
+    match src.type.int_width:
+        case 8:
+            quotient, remainder = divmod_wide(
+                sem, sem.reg_read("ah"), sem.reg_read("al"), src
+            )
+            sem.reg_write("al", sem.ir.trunc(quotient, sem.types.i8))
+            sem.reg_write("ah", sem.ir.trunc(remainder, sem.types.i8))
+        case 16:
+            quotient, remainder = divmod_wide(
+                sem, sem.reg_read("dx"), sem.reg_read("ax"), src
+            )
+            sem.reg_write("ax", sem.ir.trunc(quotient, sem.types.i16))
+            sem.reg_write("dx", sem.ir.trunc(remainder, sem.types.i16))
+        case 32:
+            quotient, remainder = divmod_wide(
+                sem, sem.reg_read("edx"), sem.reg_read("eax"), src
+            )
+            sem.reg_write("eax", sem.ir.trunc(quotient, sem.types.i32))
+            sem.reg_write("edx", sem.ir.trunc(remainder, sem.types.i32))
+        case 64:
+            quotient, remainder = divmod_wide(
+                sem, sem.reg_read("rdx"), sem.reg_read("rax"), src
+            )
+            sem.reg_write("rax", sem.ir.trunc(quotient, sem.i64))
+            sem.reg_write("rdx", sem.ir.trunc(remainder, sem.i64))
+        case width:
+            raise NotImplementedError(f"div width {width}")
+    write_undef_arith_flags(sem)
+
+
+@semantic
+def idiv(sem: Semantics):
+    src = sem.op_read(0)
+    match src.type.int_width:
+        case 8:
+            quotient, remainder = divmod_wide(
+                sem, sem.reg_read("ah"), sem.reg_read("al"), src, signed=True
+            )
+            sem.reg_write("al", sem.ir.trunc(quotient, sem.types.i8))
+            sem.reg_write("ah", sem.ir.trunc(remainder, sem.types.i8))
+        case 16:
+            quotient, remainder = divmod_wide(
+                sem, sem.reg_read("dx"), sem.reg_read("ax"), src, signed=True
+            )
+            sem.reg_write("ax", sem.ir.trunc(quotient, sem.types.i16))
+            sem.reg_write("dx", sem.ir.trunc(remainder, sem.types.i16))
+        case 32:
+            quotient, remainder = divmod_wide(
+                sem, sem.reg_read("edx"), sem.reg_read("eax"), src, signed=True
+            )
+            sem.reg_write("eax", sem.ir.trunc(quotient, sem.types.i32))
+            sem.reg_write("edx", sem.ir.trunc(remainder, sem.types.i32))
+        case 64:
+            quotient, remainder = divmod_wide(
+                sem, sem.reg_read("rdx"), sem.reg_read("rax"), src, signed=True
+            )
+            sem.reg_write("rax", sem.ir.trunc(quotient, sem.i64))
+            sem.reg_write("rdx", sem.ir.trunc(remainder, sem.i64))
+        case width:
+            raise NotImplementedError(f"idiv width {width}")
+    write_undef_arith_flags(sem)
+
+
 @semantic
 def not_(sem: Semantics):
     dst = sem.op_read(0)
     result = sem.ir.not_(dst)
     sem.op_write(0, result)
+
+
+def bit_test_base_and_mask(sem: Semantics) -> tuple[Value, Value, Value | None]:
+    base_op = sem.insn.operands[0]
+    bit_op = sem.insn.operands[1]
+    width = base_op.size * 8
+    ty = sem.types.int_n(width)
+    bit = sem.resize_int(sem.op_read(1), sem.i64)
+
+    if base_op.type == CS_OP_MEM:
+        bit_index = sem.ir.urem(bit, sem.const64(width))
+        element_index = sem.ir.udiv(bit, sem.const64(width))
+        element_offset = sem.ir.mul(element_index, sem.const64(base_op.size))
+        addr = sem.ir.add(sem.op_mem(base_op), element_offset)
+        base = sem.mem_read(addr, ty)
+    else:
+        addr = None
+        base = sem.op_read(0)
+        bit_index = sem.resize_int(bit, base.type)
+        bit_index = sem.ir.urem(bit_index, base.type.constant(width))
+
+    bit_index = sem.resize_int(bit_index, ty)
+    mask = sem.ir.shl(ty.constant(1), bit_index)
+    _ = bit_op  # Keep Capstone's operand detail access local to this helper.
+    return base, mask, addr
+
+
+def write_bit_test_flags(sem: Semantics, base: Value, mask: Value):
+    sem.write_flag(
+        "cf",
+        sem.ir.icmp(IntPredicate.NE, sem.ir.and_(base, mask), base.type.constant(0)),
+    )
+    sem.write_undef_flag("of")
+    sem.write_undef_flag("sf")
+    sem.write_undef_flag("af")
+    sem.write_undef_flag("pf")
+
+
+@semantic
+def bt(sem: Semantics):
+    base, mask, _ = bit_test_base_and_mask(sem)
+    write_bit_test_flags(sem, base, mask)
+
+
+@semantic
+def btr(sem: Semantics):
+    base, mask, addr = bit_test_base_and_mask(sem)
+    result = sem.ir.and_(base, sem.ir.not_(mask))
+    write_bit_test_flags(sem, base, mask)
+    if addr is None:
+        sem.op_write(0, result)
+    else:
+        sem.mem_write(addr, result)
 
 
 def push_impl(sem: Semantics, value: Value):
@@ -648,10 +1034,67 @@ def mov(sem: Semantics):
 
 
 @semantic
+def movabs(sem: Semantics):
+    mov(sem)
+
+
+@semantic
+def movzx(sem: Semantics):
+    src = sem.op_read(1)
+    dst_ty = sem.types.int_n(sem.insn.operands[0].size * 8)
+    sem.op_write(0, sem.resize_int(src, dst_ty))
+
+
+@semantic
+def movsx(sem: Semantics):
+    src = sem.op_read(1)
+    dst_ty = sem.types.int_n(sem.insn.operands[0].size * 8)
+    sem.op_write(0, sem.resize_int(src, dst_ty, sign_extend=True))
+
+
+@semantic
+def movsxd(sem: Semantics):
+    movsx(sem)
+
+
+@semantic
 def lea(sem: Semantics):
     src = sem.op_mem(sem.insn.operands[1])
     dst_ty = sem.types.int_n(sem.insn.operands[0].size * 8)
     sem.op_write(0, sem.resize_int(src, dst_ty))
+
+
+@semantic
+def cbw(sem: Semantics):
+    sem.reg_write("ax", sem.ir.sext(sem.reg_read("al"), sem.types.i16))
+
+
+@semantic
+def cwde(sem: Semantics):
+    sem.reg_write("eax", sem.ir.sext(sem.reg_read("ax"), sem.types.i32))
+
+
+@semantic
+def cdqe(sem: Semantics):
+    sem.reg_write("rax", sem.ir.sext(sem.reg_read("eax"), sem.i64))
+
+
+@semantic
+def cwd(sem: Semantics):
+    ax = sem.reg_read("ax")
+    sem.reg_write("dx", sem.ir.ashr(ax, sem.types.i16.constant(15)))
+
+
+@semantic
+def cdq(sem: Semantics):
+    eax = sem.reg_read("eax")
+    sem.reg_write("edx", sem.ir.ashr(eax, sem.types.i32.constant(31)))
+
+
+@semantic
+def cqo(sem: Semantics):
+    rax = sem.reg_read("rax")
+    sem.reg_write("rdx", sem.ir.ashr(rax, sem.const64(63)))
 
 
 @semantic
@@ -662,25 +1105,110 @@ def cmp(sem: Semantics):
     sem.write_sub_flags(dst, src, result)
 
 
-def flag_cond(sem: Semantics, flag_name: str, flag_expected: bool):
-    flag = sem.flag_bool(flag_name)
-    if flag_expected:
-        return flag
-    return sem.ir.xor(flag, sem.const_n(1, 1))
-
-
 @semantic
-def cmovne(sem: Semantics):
-    cond = flag_cond(sem, "zf", False)
+def test(sem: Semantics):
+    lhs = sem.op_read(0)
+    rhs = sem.resize_int(sem.op_read(1), lhs.type)
+    result = sem.ir.and_(lhs, rhs)
+    sem.write_logical_flags(result)
+
+
+def bool_not(sem: Semantics, value: Value) -> Value:
+    return sem.ir.xor(value, sem.const_n(1, 1))
+
+
+def bool_eq(sem: Semantics, lhs: Value, rhs: Value) -> Value:
+    return bool_not(sem, sem.ir.xor(lhs, rhs))
+
+
+def cc_cond(sem: Semantics, cc: str) -> Value:
+    cf = sem.flag_bool("cf")
+    zf = sem.flag_bool("zf")
+    sf = sem.flag_bool("sf")
+    of = sem.flag_bool("of")
+    pf = sem.flag_bool("pf")
+
+    match cc:
+        case "a" | "nbe":
+            return sem.ir.and_(bool_not(sem, cf), bool_not(sem, zf))
+        case "ae" | "nb" | "nc":
+            return bool_not(sem, cf)
+        case "b" | "nae" | "c":
+            return cf
+        case "be" | "na":
+            return sem.ir.or_(cf, zf)
+        case "e" | "z":
+            return zf
+        case "g" | "nle":
+            return sem.ir.and_(bool_not(sem, zf), bool_eq(sem, sf, of))
+        case "ge" | "nl":
+            return bool_eq(sem, sf, of)
+        case "l" | "nge":
+            return sem.ir.xor(sf, of)
+        case "le" | "ng":
+            return sem.ir.or_(zf, sem.ir.xor(sf, of))
+        case "ne" | "nz":
+            return bool_not(sem, zf)
+        case "no":
+            return bool_not(sem, of)
+        case "np" | "po":
+            return bool_not(sem, pf)
+        case "ns":
+            return bool_not(sem, sf)
+        case "o":
+            return of
+        case "p" | "pe":
+            return pf
+        case "s":
+            return sf
+    raise NotImplementedError(f"condition code {cc}")
+
+
+def cmovcc(sem: Semantics, cc: str):
+    cond = cc_cond(sem, cc)
     old_value = sem.op_read(0)
     new_value = sem.resize_int(sem.op_read(1), old_value.type)
     sem.op_write(0, sem.ir.select(cond, new_value, old_value))
 
 
-def jcc(sem: Semantics, flag_name: str, flag_expected: bool):
+@semantic
+def cmove(sem: Semantics):
+    cmovcc(sem, "e")
+
+
+@semantic
+def cmovne(sem: Semantics):
+    cmovcc(sem, "ne")
+
+
+def setcc(sem: Semantics, cc: str):
+    sem.op_write(0, sem.ir.zext(cc_cond(sem, cc), sem.types.i8))
+
+
+@semantic
+def setb(sem: Semantics):
+    setcc(sem, "b")
+
+
+@semantic
+def sete(sem: Semantics):
+    setcc(sem, "e")
+
+
+@semantic
+def setl(sem: Semantics):
+    setcc(sem, "l")
+
+
+@semantic
+def setne(sem: Semantics):
+    setcc(sem, "ne")
+
+
+def jcc(sem: Semantics, cc: str):
     brtrue = sem.insn.operands[0].imm
     brfalse = sem.insn.address + sem.insn.size
-    cond = flag_cond(sem, flag_name, flag_expected)
+    cond = cc_cond(sem, cc)
     sem.ir.cond_br(
         cond,
         sem.get_or_create_block(brtrue),
@@ -695,13 +1223,63 @@ def jcc(sem: Semantics, flag_name: str, flag_expected: bool):
 
 
 @semantic
+def ja(sem: Semantics):
+    return jcc(sem, "a")
+
+
+@semantic
+def jae(sem: Semantics):
+    return jcc(sem, "ae")
+
+
+@semantic
+def jb(sem: Semantics):
+    return jcc(sem, "b")
+
+
+@semantic
+def jbe(sem: Semantics):
+    return jcc(sem, "be")
+
+
+@semantic
 def je(sem: Semantics):
-    return jcc(sem, "zf", True)
+    return jcc(sem, "e")
+
+
+@semantic
+def jg(sem: Semantics):
+    return jcc(sem, "g")
+
+
+@semantic
+def jge(sem: Semantics):
+    return jcc(sem, "ge")
+
+
+@semantic
+def jl(sem: Semantics):
+    return jcc(sem, "l")
+
+
+@semantic
+def jle(sem: Semantics):
+    return jcc(sem, "le")
 
 
 @semantic
 def jne(sem: Semantics):
-    return jcc(sem, "zf", False)
+    return jcc(sem, "ne")
+
+
+@semantic
+def call(sem: Semantics):
+    dst = sem.op_read(0)
+    fallthrough = sem.insn.address + sem.insn.size
+    push_impl(sem, sem.const64(fallthrough))
+    sem.ir.call(sem.call_handler, [dst])
+    sem.ir.br(sem.get_or_create_block(fallthrough))
+    return [Successor(sem.insn.address, sem.const64(fallthrough))]
 
 
 @semantic
@@ -775,3 +1353,5 @@ if __name__ == "__main__":
             print(vm_entry)
             cfg = lift(module, PE("tests/cfg.exe"), 0x140001000)
             print(cfg)
+            riscvm_run = lift(module, PE("riscvm.exe"), 0x140001104)
+            print(riscvm_run)
