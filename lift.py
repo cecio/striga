@@ -61,6 +61,16 @@ GPRS = [
 ]
 
 
+RFLAGS_BITS = {
+    "cf": 0,
+    "pf": 2,
+    "af": 4,
+    "zf": 6,
+    "sf": 7,
+    "of": 11,
+}
+
+
 class Successor(NamedTuple):
     src: int
     dst: Value
@@ -354,50 +364,208 @@ class Semantics:
         load.set_inst_alignment(1)
         return load
 
-    def lift_flags(
+    def bool_to_flag(self, value: Value) -> Value:
+        """Convert an LLVM i1 flag predicate to the i8 state representation."""
+        if value.type == self.types.i8:
+            return value
+        assert value.type == self.types.i1
+        return self.ir.zext(value, self.types.i8)
+
+    def flag_bool(self, name: str) -> Value:
+        """Read an i8 flag from state as an LLVM i1 predicate."""
+        return self.ir.icmp(IntPredicate.NE, self.reg_read(name), self.const_n(0, 8))
+
+    def write_flag(self, name: str, value: Value):
+        self.reg_write(name, self.bool_to_flag(value))
+
+    def write_flag_if(self, cond: Value, name: str, value: Value):
+        """Update a flag only when ``cond`` is true; otherwise preserve it."""
+        assert cond.type == self.types.i1
+        old_value = self.reg_read(name)
+        new_value = self.bool_to_flag(value)
+        self.reg_write(name, self.ir.select(cond, new_value, old_value))
+
+    def undef_bool(self) -> Value:
+        """Return a stable arbitrary bit for architecturally undefined flags."""
+        return self.ir.freeze(self.types.i1.undef())
+
+    def write_undef_flag(self, name: str):
+        self.write_flag(name, self.undef_bool())
+
+    def write_undef_flag_if(self, cond: Value, name: str):
+        self.write_flag_if(cond, name, self.undef_bool())
+
+    def result_is_zero(self, result: Value) -> Value:
+        return self.ir.icmp(IntPredicate.EQ, result, result.type.constant(0))
+
+    def result_sign_bit(self, result: Value) -> Value:
+        sign_shift = result.type.constant(result.type.int_width - 1)
+        return self.ir.trunc(self.ir.lshr(result, sign_shift), self.types.i1)
+
+    def result_parity_even(self, result: Value) -> Value:
+        """Return PF: even parity in the low byte of ``result``."""
+        low = self.resize_int(result, self.types.i8)
+        x = self.ir.xor(low, self.ir.lshr(low, self.const_n(4, 8)))
+        x = self.ir.xor(x, self.ir.lshr(x, self.const_n(2, 8)))
+        x = self.ir.xor(x, self.ir.lshr(x, self.const_n(1, 8)))
+        return self.ir.icmp(
+            IntPredicate.EQ,
+            self.ir.and_(x, self.const_n(1, 8)),
+            self.const_n(0, 8),
+        )
+
+    def aux_carry(self, lhs: Value, rhs: Value, result: Value) -> Value:
+        nibble_carry = self.ir.and_(
+            self.ir.xor(self.ir.xor(lhs, rhs), result),
+            lhs.type.constant(0x10),
+        )
+        return self.ir.icmp(IntPredicate.NE, nibble_carry, lhs.type.constant(0))
+
+    def add_overflow(self, lhs: Value, rhs: Value, result: Value) -> Value:
+        sign_mask = lhs.type.constant(-(1 << (lhs.type.int_width - 1)))
+        overflow_bits = self.ir.and_(
+            self.ir.xor(lhs, result),
+            self.ir.xor(rhs, result),
+        )
+        return self.ir.icmp(
+            IntPredicate.NE,
+            self.ir.and_(overflow_bits, sign_mask),
+            lhs.type.constant(0),
+        )
+
+    def sub_overflow(self, lhs: Value, rhs: Value, result: Value) -> Value:
+        sign_mask = lhs.type.constant(-(1 << (lhs.type.int_width - 1)))
+        overflow_bits = self.ir.and_(
+            self.ir.xor(lhs, rhs),
+            self.ir.xor(lhs, result),
+        )
+        return self.ir.icmp(
+            IntPredicate.NE,
+            self.ir.and_(overflow_bits, sign_mask),
+            lhs.type.constant(0),
+        )
+
+    def write_common_arith_flags(self, lhs: Value, rhs: Value, result: Value):
+        self.write_flag("pf", self.result_parity_even(result))
+        self.write_flag("af", self.aux_carry(lhs, rhs, result))
+        self.write_flag("zf", self.result_is_zero(result))
+        self.write_flag("sf", self.result_sign_bit(result))
+
+    def write_add_flags(
         self,
         lhs: Value,
         rhs: Value,
         result: Value,
+        *,
+        write_cf: bool = True,
     ):
-        is_zero = self.ir.icmp(IntPredicate.EQ, result, result.type.constant(0))
-        zf = self.ir.zext(is_zero, self.types.i8)
-        self.reg_write("zf", zf)
-        # TODO: implement full x86 flag semantics. This is intentionally limited
-        # to ZF for now to avoid bloating the target-specific lifted IR.
+        if write_cf:
+            self.write_flag("cf", self.ir.icmp(IntPredicate.ULT, result, lhs))
+        self.write_common_arith_flags(lhs, rhs, result)
+        self.write_flag("of", self.add_overflow(lhs, rhs, result))
+
+    def write_sub_flags(self, lhs: Value, rhs: Value, result: Value):
+        self.write_flag("cf", self.ir.icmp(IntPredicate.ULT, lhs, rhs))
+        self.write_common_arith_flags(lhs, rhs, result)
+        self.write_flag("of", self.sub_overflow(lhs, rhs, result))
+
+    def write_logical_flags(self, result: Value):
+        false = self.const_n(0, 1)
+        self.write_flag("cf", false)
+        self.write_flag("pf", self.result_parity_even(result))
+        self.write_undef_flag("af")
+        self.write_flag("zf", self.result_is_zero(result))
+        self.write_flag("sf", self.result_sign_bit(result))
+        self.write_flag("of", false)
+
+    def write_shl_flags(self, lhs: Value, count: Value, result: Value):
+        width = lhs.type.int_width
+        count_nonzero = self.ir.icmp(IntPredicate.NE, count, count.type.constant(0))
+        count_one = self.ir.icmp(IntPredicate.EQ, count, count.type.constant(1))
+        if width < 32:
+            count_in_range = self.ir.icmp(
+                IntPredicate.ULT, count, count.type.constant(width)
+            )
+        else:
+            count_in_range = self.const_n(1, 1)
+
+        cf_defined = self.ir.and_(count_nonzero, count_in_range)
+        safe_count = self.ir.select(cf_defined, count, count.type.constant(1))
+        cf_shift = self.ir.sub(count.type.constant(width), safe_count)
+        cf = self.ir.trunc(self.ir.lshr(lhs, cf_shift), self.types.i1)
+        if width < 32:
+            cf = self.ir.select(count_in_range, cf, self.undef_bool())
+        self.write_flag_if(count_nonzero, "cf", cf)
+
+        of_for_one = self.ir.xor(
+            self.result_sign_bit(lhs), self.result_sign_bit(result)
+        )
+        of = self.ir.select(count_one, of_for_one, self.undef_bool())
+        self.write_flag_if(count_nonzero, "of", of)
+
+        self.write_flag_if(count_nonzero, "pf", self.result_parity_even(result))
+        self.write_undef_flag_if(count_nonzero, "af")
+        self.write_flag_if(count_nonzero, "zf", self.result_is_zero(result))
+        self.write_flag_if(count_nonzero, "sf", self.result_sign_bit(result))
+
+    def pack_rflags(self) -> Value:
+        value = self.const64(1 << 1)  # Reserved bit 1 is always set.
+        for name, bit in RFLAGS_BITS.items():
+            flag = self.ir.zext(self.flag_bool(name), self.i64)
+            if bit:
+                flag = self.ir.shl(flag, self.const64(bit))
+            value = self.ir.or_(value, flag)
+        return value
+
+    def unpack_rflags(self, value: Value):
+        value = self.resize_int(value, self.i64)
+        for name, bit in RFLAGS_BITS.items():
+            flag = self.ir.trunc(self.ir.lshr(value, self.const64(bit)), self.types.i1)
+            self.write_flag(name, flag)
 
 
-def binop(sem: Semantics, opcode: Opcode):
+ArithFlagWriter: TypeAlias = Callable[[Semantics, Value, Value, Value], None]
+
+
+def arith_binop(sem: Semantics, opcode: Opcode, write_flags: ArithFlagWriter):
     dst = sem.op_read(0)
     src = sem.resize_int(sem.op_read(1), dst.type)
     result = sem.ir.binop(opcode, dst, src)
     sem.op_write(0, result)
-    sem.lift_flags(dst, src, result)
+    write_flags(sem, dst, src, result)
+
+
+def logical_binop(sem: Semantics, opcode: Opcode):
+    dst = sem.op_read(0)
+    src = sem.resize_int(sem.op_read(1), dst.type)
+    result = sem.ir.binop(opcode, dst, src)
+    sem.op_write(0, result)
+    sem.write_logical_flags(result)
 
 
 @semantic
 def add(sem: Semantics):
-    binop(sem, Opcode.Add)
+    arith_binop(sem, Opcode.Add, Semantics.write_add_flags)
 
 
 @semantic
 def sub(sem: Semantics):
-    binop(sem, Opcode.Sub)
+    arith_binop(sem, Opcode.Sub, Semantics.write_sub_flags)
 
 
 @semantic
 def and_(sem: Semantics):
-    binop(sem, Opcode.And)
+    logical_binop(sem, Opcode.And)
 
 
 @semantic
 def xor(sem: Semantics):
-    binop(sem, Opcode.Xor)
+    logical_binop(sem, Opcode.Xor)
 
 
 @semantic
 def or_(sem: Semantics):
-    binop(sem, Opcode.Or)
+    logical_binop(sem, Opcode.Or)
 
 
 @semantic
@@ -419,7 +587,7 @@ def shl(sem: Semantics):
         result = sem.ir.shl(dst, count)
 
     sem.op_write(0, result)
-    sem.lift_flags(dst, count, result)
+    sem.write_shl_flags(dst, count, result)
 
 
 @semantic
@@ -428,7 +596,7 @@ def inc(sem: Semantics):
     src = dst.type.constant(1)
     result = sem.ir.add(dst, src)
     sem.op_write(0, result)
-    sem.lift_flags(dst, src, result)
+    sem.write_add_flags(dst, src, result, write_cf=False)
 
 
 @semantic
@@ -465,18 +633,12 @@ def pop(sem: Semantics):
 
 @semantic
 def pushfq(sem: Semantics):
-    ir = sem.ir
-    zf = sem.reg_read("zf")
-    value = ir.shl(ir.zext(zf, sem.i64), sem.const64(6))
-    push_impl(sem, value)
+    push_impl(sem, sem.pack_rflags())
 
 
 @semantic
 def popfq(sem: Semantics):
-    ir = sem.ir
-    value = pop_impl(sem)
-    zf = ir.trunc(ir.lshr(value, sem.const64(6)), sem.types.i1)
-    sem.reg_write("zf", ir.zext(zf, sem.types.i8))
+    sem.unpack_rflags(pop_impl(sem))
 
 
 @semantic
@@ -497,14 +659,14 @@ def cmp(sem: Semantics):
     dst = sem.op_read(0)
     src = sem.resize_int(sem.op_read(1), dst.type)
     result = sem.ir.sub(dst, src)
-    sem.lift_flags(dst, src, result)
+    sem.write_sub_flags(dst, src, result)
 
 
 def flag_cond(sem: Semantics, flag_name: str, flag_expected: bool):
-    flag = sem.reg_read(flag_name)
-    return sem.ir.icmp(
-        IntPredicate.NE if flag_expected else IntPredicate.EQ, flag, sem.const_n(0, 8)
-    )
+    flag = sem.flag_bool(flag_name)
+    if flag_expected:
+        return flag
+    return sem.ir.xor(flag, sem.const_n(1, 1))
 
 
 @semantic
