@@ -5,3 +5,6 @@ __pycache__/
 *.nam
 *.til
 *.i64
+*.ll
+*.bc
+*.o
