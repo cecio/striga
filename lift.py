@@ -34,11 +34,21 @@ from capstone.x86_const import (
     X86_INS_XOR,
 )
 
-import llvm
+from llvm import (
+    create_context,
+    Value,
+    Builder,
+    Module,
+    Function,
+    Linkage,
+    Opcode,
+    IntPredicate,
+    Type,
+)
 
 
 class Lifter:
-    def __init__(self, pe: pefile.PE, module: llvm.Module):
+    def __init__(self, pe: pefile.PE, module: Module):
         self.pe = pe
         self.image_base = self.pe.OPTIONAL_HEADER.ImageBase  # pyright: ignore[reportOptionalMemberAccess, reportAttributeAccessIssue]
         self.image_size = self.pe.OPTIONAL_HEADER.SizeOfImage  # pyright: ignore[reportOptionalMemberAccess, reportAttributeAccessIssue]
@@ -79,15 +89,15 @@ class Lifter:
         self.reg_types = {
             name: self.types.int_n(size) for name, size in self.reg_sizes.items()
         }
-        self.reg_ptrs: dict[str, llvm.Value] = {}
+        self.reg_ptrs: dict[str, Value] = {}
         self.state_ty = types.struct(self.reg_types.values(), name="State")
-        self.function: llvm.Function | None = None
+        self.function: Function | None = None
         self.lifted_ty = types.function(types.void, [types.ptr, types.ptr])
 
     @staticmethod
     @contextmanager
     def create(pe: pefile.PE):
-        with llvm.create_context() as context:
+        with create_context() as context:
             with context.create_module("") as module:
                 yield Lifter(pe, module)
 
@@ -100,7 +110,7 @@ class Lifter:
         fn = self.module.get_function(name)
         if fn is None:
             fn = self.module.add_function(name, self.lifted_ty)
-            fn.linkage = llvm.Linkage.Internal
+            fn.linkage = Linkage.Internal
             memory, state = fn.params
             memory.name = "memory"
             state.name = "state"
@@ -120,7 +130,7 @@ class Lifter:
             )
             for insn in entry.instructions:
                 if (
-                    insn.opcode == llvm.Opcode.GetElementPtr
+                    insn.opcode == Opcode.GetElementPtr
                     and insn.gep_source_element_type == self.state_ty
                 ):
                     assert insn.name in self.reg_types, "unexpected GEP"
@@ -128,11 +138,11 @@ class Lifter:
 
         self.function = fn
 
-    def _reg_read(self, builder: llvm.Builder, name: str):
+    def _reg_read(self, builder: Builder, name: str):
         reg_ptr = self.reg_ptrs[name]
         return builder.load(self.reg_types[name], reg_ptr)
 
-    def _reg_write(self, builder: llvm.Builder, name: str, value: llvm.Value):
+    def _reg_write(self, builder: Builder, name: str, value: Value):
         extend_regs = {
             "eax": "rax",
             "ebx": "rbx",
@@ -161,22 +171,19 @@ class Lifter:
             assert value.type.int_width == self.reg_sizes[name]
             builder.store(value, reg_ptr)
 
-    def _operand_mem(
-        self, builder: llvm.Builder, insn: CsInsn, op: X86Op
-    ) -> llvm.Value:
+    def _operand_mem(self, builder: Builder, insn: CsInsn, op: X86Op) -> Value:
         assert op.type == CS_OP_MEM
 
-        mem_disp = op.mem.disp
+        addr = self.i64.constant(op.mem.disp)
+
         base = op.mem.base
-        if base == X86_REG_RIP:
-            mem_disp += insn.address + insn.size
-
-        addr = self.i64.constant(mem_disp)
-
         if base != X86_REG_INVALID:
-            base_name: str = insn.reg_name(base)  # pyright: ignore[reportAssignmentType]
-            base_value = self._reg_read(builder, base_name)
-            addr = builder.add(addr, base_value)
+            if base == X86_REG_RIP:
+                addr = builder.add(addr, self.i64.constant(insn.address + insn.size))
+            else:
+                base_name: str = insn.reg_name(base)  # pyright: ignore[reportAssignmentType]
+                base_value = self._reg_read(builder, base_name)
+                addr = builder.add(addr, base_value)
 
         index = op.mem.index
         if index != X86_REG_INVALID:
@@ -190,9 +197,7 @@ class Lifter:
 
         return addr
 
-    def _operand_read(
-        self, builder: llvm.Builder, insn: CsInsn, index: int
-    ) -> llvm.Value:
+    def _operand_read(self, builder: Builder, insn: CsInsn, index: int) -> Value:
         op: X86Op = insn.operands[index]
         if op.type == CS_OP_REG:
             name: str = insn.reg_name(op.reg)  # pyright: ignore[reportAssignmentType]
@@ -205,9 +210,7 @@ class Lifter:
             return self._mem_read(builder, addr, self.types.int_n(op.size * 8))
         assert False, "unreachable"
 
-    def _operand_write(
-        self, builder: llvm.Builder, insn: CsInsn, index: int, value: llvm.Value
-    ):
+    def _operand_write(self, builder: Builder, insn: CsInsn, index: int, value: Value):
         op: X86Op = insn.operands[index]
         if op.type == CS_OP_REG:
             name: str = insn.reg_name(op.reg)  # pyright: ignore[reportAssignmentType]
@@ -222,53 +225,53 @@ class Lifter:
 
     def _lift_flags(
         self,
-        builder: llvm.Builder,
+        builder: Builder,
         insn: CsInsn,
-        lhs: llvm.Value,
-        rhs: llvm.Value,
-        result: llvm.Value,
+        lhs: Value,
+        rhs: Value,
+        result: Value,
     ):
-        is_zero = builder.icmp(llvm.IntPredicate.EQ, result, result.type.constant(0))
+        is_zero = builder.icmp(IntPredicate.EQ, result, result.type.constant(0))
         zf = builder.zext(is_zero, self.types.i8)
         self._reg_write(builder, "zf", zf)
-        # TODO: other flags
+        # TODO: other flags are not used in the sample
 
-    def _lift_add(self, builder: llvm.Builder, insn: CsInsn):
-        lhs = self._operand_read(builder, insn, 1)
-        rhs = self._operand_read(builder, insn, 0)
-        result = builder.add(lhs, rhs)
+    def _lift_add(self, builder: Builder, insn: CsInsn):
+        dst = self._operand_read(builder, insn, 0)
+        src = self._operand_read(builder, insn, 1)
+        result = builder.add(dst, src)
         self._operand_write(builder, insn, 0, result)
-        self._lift_flags(builder, insn, lhs, rhs, result)
+        self._lift_flags(builder, insn, dst, src, result)
 
-    def _lift_sub(self, builder: llvm.Builder, insn: CsInsn):
-        lhs = self._operand_read(builder, insn, 1)
-        rhs = self._operand_read(builder, insn, 0)
-        result = builder.sub(lhs, rhs)
+    def _lift_sub(self, builder: Builder, insn: CsInsn):
+        dst = self._operand_read(builder, insn, 0)
+        src = self._operand_read(builder, insn, 1)
+        result = builder.sub(dst, src)
         self._operand_write(builder, insn, 0, result)
-        self._lift_flags(builder, insn, lhs, rhs, result)
+        self._lift_flags(builder, insn, dst, src, result)
 
-    def _mem_write(self, builder: llvm.Builder, addr: llvm.Value, value: llvm.Value):
+    def _mem_write(self, builder: Builder, addr: Value, value: Value):
         assert self.function, "call switch first"
         memory = self.function.get_param(0)
         ptr = builder.gep(self.types.i8, memory, [addr])
         builder.store(value, ptr)
 
-    def _mem_read(self, builder: llvm.Builder, addr: llvm.Value, ty: llvm.Type):
+    def _mem_read(self, builder: Builder, addr: Value, ty: Type):
         assert self.function, "call switch first"
         memory = self.function.get_param(0)
         ptr = builder.gep(self.types.i8, memory, [addr])
         return builder.load(ty, ptr)
 
-    def _lift_push(self, builder: llvm.Builder, insn: CsInsn):
+    def _lift_push(self, builder: Builder, insn: CsInsn):
         value = self._operand_read(builder, insn, 0)
         rsp = self._reg_read(builder, "rsp")
         rsp_sub = builder.sub(rsp, self.i64.constant(8))
         self._reg_write(builder, "rsp", rsp_sub)
         self._mem_write(builder, rsp_sub, value)
 
-    def _lift_jmp(self, builder: llvm.Builder, insn: CsInsn) -> list[int | str]:
+    def _lift_jmp(self, builder: Builder, insn: CsInsn) -> list[int | str]:
         dest = self._operand_read(builder, insn, 0)
-        self._reg_write(builder, "rip", dest)
+        self._reg_write(builder, "rip", dest)  # advance rip
         op = insn.operands[0]
         if op.type == CS_OP_IMM:
             return [op.imm]
@@ -277,7 +280,7 @@ class Lifter:
             return [name]
         raise NotImplementedError("memory jump operand")
 
-    def _lift_pushfq(self, builder: llvm.Builder, insn: CsInsn):
+    def _lift_pushfq(self, builder: Builder, insn: CsInsn):
         zf = self._reg_read(builder, "zf")
 
         value = builder.shl(builder.zext(zf, self.i64), self.i64.constant(6))
@@ -286,7 +289,7 @@ class Lifter:
         self._reg_write(builder, "rsp", rsp_sub)
         self._mem_write(builder, rsp_sub, value)
 
-    def _lift_mov(self, builder: llvm.Builder, insn: CsInsn):
+    def _lift_mov(self, builder: Builder, insn: CsInsn):
         value = self._operand_read(builder, insn, 1)
         self._operand_write(builder, insn, 0, value)
 
@@ -299,7 +302,9 @@ class Lifter:
         # Create a new block to lift the instruction
         # TODO: how to handle conditional jumps?
         last_block = self.function.last_basic_block
-        insn_block = self.function.append_basic_block(f"lifted_{hex(address)}_{insn.mnemonic}")
+        insn_block = self.function.append_basic_block(
+            f"lifted_{hex(address)}_{insn.mnemonic}"
+        )
         with last_block.create_builder() as builder:
             builder.br(insn_block)
 
@@ -317,6 +322,8 @@ class Lifter:
                 self._lift_mov(builder, insn)
             elif insn.id == X86_INS_SUB:
                 self._lift_sub(builder, insn)
+            elif insn.id == X86_INS_NOP:
+                pass
 
             else:
                 raise NotImplementedError(
@@ -350,8 +357,11 @@ def main():
                 continue
 
             if isinstance(addr, str):
+                print("TODO: jmp reg")
                 assert queue.empty()
                 break
+
+            visited.add(addr)
 
             successors = lifter.lift_va(addr)
             for successor in successors:
