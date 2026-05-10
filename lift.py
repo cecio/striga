@@ -14,6 +14,7 @@ from capstone import (
 )
 from capstone.x86 import X86Op
 from capstone.x86_const import (
+    X86_REG_EIP,
     X86_REG_RIP,
     X86_REG_INVALID,
     X86_REG_GS,
@@ -308,23 +309,29 @@ class Semantics:
         assert op.type == CS_OP_MEM
 
         ir = self.ir
-        addr = self.const64(op.mem.disp)
+        addr_bits = self.insn.addr_size * 8
+        addr_ty = self.types.int_n(addr_bits)
+        addr = self.const_n(op.mem.disp, addr_bits)
 
         base = op.mem.base
         if base != X86_REG_INVALID:
-            if base == X86_REG_RIP:
-                addr = ir.add(addr, self.const64(self.insn.address + self.insn.size))
+            if base in (X86_REG_RIP, X86_REG_EIP):
+                next_ip = self.insn.address + self.insn.size
+                addr = ir.add(addr, addr_ty.constant(next_ip))
             else:
                 base_name: str = self.reg_name(base)  # pyright: ignore[reportAssignmentType]
-                base_value = self.reg_read(base_name)
+                base_value = self.resize_int(self.reg_read(base_name), addr_ty)
                 addr = ir.add(addr, base_value)
 
         index = op.mem.index
         if index != X86_REG_INVALID:
             index_name: str = self.reg_name(index)  # pyright: ignore[reportAssignmentType]
-            index_value = self.reg_read(index_name)
-            scale_value = self.const64(op.mem.scale)
+            index_value = self.resize_int(self.reg_read(index_name), addr_ty)
+            scale_value = addr_ty.constant(op.mem.scale)
             addr = ir.add(addr, ir.mul(index_value, scale_value))
+
+        if addr.type != self.i64:
+            addr = self.resize_int(addr, self.i64)
 
         if op.mem.segment == X86_REG_GS:
             addr = ir.add(addr, self.reg_read("gsbase"))
@@ -560,7 +567,8 @@ class Semantics:
         else:
             count_in_range = self.const_n(1, 1)
 
-        safe_count = self.ir.select(count_in_range, count, count.type.constant(1))
+        cf_defined = self.ir.and_(count_nonzero, count_in_range)
+        safe_count = self.ir.select(cf_defined, count, count.type.constant(1))
         cf_shift = self.ir.sub(safe_count, count.type.constant(1))
         shifted_out = self.ir.trunc(self.ir.lshr(lhs, cf_shift), self.types.i1)
         cf = self.ir.select(count_in_range, shifted_out, self.result_sign_bit(lhs))
@@ -944,23 +952,45 @@ def bit_test_base_and_mask(sem: Semantics) -> tuple[Value, Value, Value | None]:
     bit_op = sem.insn.operands[1]
     width = base_op.size * 8
     ty = sem.types.int_n(width)
-    bit = sem.resize_int(sem.op_read(1), sem.i64)
+    raw_bit = sem.op_read(1)
 
     if base_op.type == CS_OP_MEM:
-        bit_index = sem.ir.urem(bit, sem.const64(width))
-        element_index = sem.ir.udiv(bit, sem.const64(width))
-        element_offset = sem.ir.mul(element_index, sem.const64(base_op.size))
-        addr = sem.ir.add(sem.op_mem(base_op), element_offset)
+        base_addr = sem.op_mem(base_op)
+        if bit_op.type == CS_OP_IMM:
+            # Immediate memory forms use only the low bits of the immediate;
+            # assemblers fold any high bits into the displacement.
+            bit = sem.resize_int(raw_bit, sem.i64)
+            bit_index = sem.ir.urem(bit, sem.const64(width))
+            addr = base_addr
+        else:
+            # Register memory forms address a bit string.  Negative register
+            # offsets select bits before the base, so use signed floor division
+            # to compute the containing memory element and a non-negative bit.
+            bit = sem.resize_int(raw_bit, sem.i64, sign_extend=True)
+            divisor = sem.const64(width)
+            quotient = sem.ir.sdiv(bit, divisor)
+            remainder = sem.ir.srem(bit, divisor)
+            rem_negative = sem.ir.icmp(
+                IntPredicate.SLT, remainder, remainder.type.constant(0)
+            )
+            element_index = sem.ir.select(
+                rem_negative, sem.ir.sub(quotient, sem.const64(1)), quotient
+            )
+            bit_index = sem.ir.select(
+                rem_negative, sem.ir.add(remainder, divisor), remainder
+            )
+            element_offset = sem.ir.mul(element_index, sem.const64(base_op.size))
+            addr = sem.ir.add(base_addr, element_offset)
         base = sem.mem_read(addr, ty)
     else:
         addr = None
         base = sem.op_read(0)
+        bit = sem.resize_int(raw_bit, sem.i64)
         bit_index = sem.resize_int(bit, base.type)
         bit_index = sem.ir.urem(bit_index, base.type.constant(width))
 
     bit_index = sem.resize_int(bit_index, ty)
     mask = sem.ir.shl(ty.constant(1), bit_index)
-    _ = bit_op  # Keep Capstone's operand detail access local to this helper.
     return base, mask, addr
 
 
@@ -993,16 +1023,20 @@ def btr(sem: Semantics):
 
 
 def push_impl(sem: Semantics, value: Value):
+    byte_width = value.type.int_width // 8
     rsp = sem.reg_read("rsp")
-    rsp_sub = sem.ir.sub(rsp, sem.const64(8))
+    rsp_sub = sem.ir.sub(rsp, sem.const64(byte_width))
     sem.reg_write("rsp", rsp_sub)
     sem.mem_write(rsp_sub, value)
 
 
-def pop_impl(sem: Semantics) -> Value:
+def pop_impl(sem: Semantics, ty: Type | None = None) -> Value:
+    if ty is None:
+        ty = sem.i64
+    byte_width = ty.int_width // 8
     rsp = sem.reg_read("rsp")
-    value = sem.mem_read(rsp, sem.i64)
-    rsp_add = sem.ir.add(rsp, sem.const64(8))
+    value = sem.mem_read(rsp, ty)
+    rsp_add = sem.ir.add(rsp, sem.const64(byte_width))
     sem.reg_write("rsp", rsp_add)
     return value
 
@@ -1014,7 +1048,8 @@ def push(sem: Semantics):
 
 @semantic
 def pop(sem: Semantics):
-    sem.op_write(0, pop_impl(sem))
+    dst_ty = sem.types.int_n(sem.insn.operands[0].size * 8)
+    sem.op_write(0, pop_impl(sem, dst_ty))
 
 
 @semantic
@@ -1172,8 +1207,48 @@ def cmovcc(sem: Semantics, cc: str):
 
 
 @semantic
+def cmova(sem: Semantics):
+    cmovcc(sem, "a")
+
+
+@semantic
+def cmovae(sem: Semantics):
+    cmovcc(sem, "ae")
+
+
+@semantic
+def cmovb(sem: Semantics):
+    cmovcc(sem, "b")
+
+
+@semantic
+def cmovbe(sem: Semantics):
+    cmovcc(sem, "be")
+
+
+@semantic
 def cmove(sem: Semantics):
     cmovcc(sem, "e")
+
+
+@semantic
+def cmovg(sem: Semantics):
+    cmovcc(sem, "g")
+
+
+@semantic
+def cmovge(sem: Semantics):
+    cmovcc(sem, "ge")
+
+
+@semantic
+def cmovl(sem: Semantics):
+    cmovcc(sem, "l")
+
+
+@semantic
+def cmovle(sem: Semantics):
+    cmovcc(sem, "le")
 
 
 @semantic
@@ -1181,8 +1256,48 @@ def cmovne(sem: Semantics):
     cmovcc(sem, "ne")
 
 
+@semantic
+def cmovno(sem: Semantics):
+    cmovcc(sem, "no")
+
+
+@semantic
+def cmovnp(sem: Semantics):
+    cmovcc(sem, "np")
+
+
+@semantic
+def cmovns(sem: Semantics):
+    cmovcc(sem, "ns")
+
+
+@semantic
+def cmovo(sem: Semantics):
+    cmovcc(sem, "o")
+
+
+@semantic
+def cmovp(sem: Semantics):
+    cmovcc(sem, "p")
+
+
+@semantic
+def cmovs(sem: Semantics):
+    cmovcc(sem, "s")
+
+
 def setcc(sem: Semantics, cc: str):
     sem.op_write(0, sem.ir.zext(cc_cond(sem, cc), sem.types.i8))
+
+
+@semantic
+def seta(sem: Semantics):
+    setcc(sem, "a")
+
+
+@semantic
+def setae(sem: Semantics):
+    setcc(sem, "ae")
 
 
 @semantic
@@ -1191,8 +1306,23 @@ def setb(sem: Semantics):
 
 
 @semantic
+def setbe(sem: Semantics):
+    setcc(sem, "be")
+
+
+@semantic
 def sete(sem: Semantics):
     setcc(sem, "e")
+
+
+@semantic
+def setg(sem: Semantics):
+    setcc(sem, "g")
+
+
+@semantic
+def setge(sem: Semantics):
+    setcc(sem, "ge")
 
 
 @semantic
@@ -1201,14 +1331,48 @@ def setl(sem: Semantics):
 
 
 @semantic
+def setle(sem: Semantics):
+    setcc(sem, "le")
+
+
+@semantic
 def setne(sem: Semantics):
     setcc(sem, "ne")
 
 
-def jcc(sem: Semantics, cc: str):
+@semantic
+def setno(sem: Semantics):
+    setcc(sem, "no")
+
+
+@semantic
+def setnp(sem: Semantics):
+    setcc(sem, "np")
+
+
+@semantic
+def setns(sem: Semantics):
+    setcc(sem, "ns")
+
+
+@semantic
+def seto(sem: Semantics):
+    setcc(sem, "o")
+
+
+@semantic
+def setp(sem: Semantics):
+    setcc(sem, "p")
+
+
+@semantic
+def sets(sem: Semantics):
+    setcc(sem, "s")
+
+
+def conditional_jump(sem: Semantics, cond: Value):
     brtrue = sem.insn.operands[0].imm
     brfalse = sem.insn.address + sem.insn.size
-    cond = cc_cond(sem, cc)
     sem.ir.cond_br(
         cond,
         sem.get_or_create_block(brtrue),
@@ -1220,6 +1384,15 @@ def jcc(sem: Semantics, cc: str):
         Successor(src, sem.const64(brtrue)),
         Successor(src, sem.const64(brfalse)),
     ]
+
+
+def jcc(sem: Semantics, cc: str):
+    return conditional_jump(sem, cc_cond(sem, cc))
+
+
+def jcxz(sem: Semantics, reg: str):
+    value = sem.reg_read(reg)
+    return conditional_jump(sem, sem.result_is_zero(value))
 
 
 @semantic
@@ -1270,6 +1443,46 @@ def jle(sem: Semantics):
 @semantic
 def jne(sem: Semantics):
     return jcc(sem, "ne")
+
+
+@semantic
+def jno(sem: Semantics):
+    return jcc(sem, "no")
+
+
+@semantic
+def jnp(sem: Semantics):
+    return jcc(sem, "np")
+
+
+@semantic
+def jns(sem: Semantics):
+    return jcc(sem, "ns")
+
+
+@semantic
+def jo(sem: Semantics):
+    return jcc(sem, "o")
+
+
+@semantic
+def jp(sem: Semantics):
+    return jcc(sem, "p")
+
+
+@semantic
+def js(sem: Semantics):
+    return jcc(sem, "s")
+
+
+@semantic
+def jecxz(sem: Semantics):
+    return jcxz(sem, "ecx")
+
+
+@semantic
+def jrcxz(sem: Semantics):
+    return jcxz(sem, "rcx")
 
 
 @semantic
