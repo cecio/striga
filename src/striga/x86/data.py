@@ -25,7 +25,7 @@ def popfq(sem: Semantics):
     value = sem.resize_int(value, sem.i64)
     for name, bit in FLAGS.items():
         flag = sem.ir.trunc(sem.ir.lshr(value, sem.const64(bit)), sem.types.i1)
-        sem.write_flag(name, flag)
+        sem.flag_write(name, flag)
 
 
 @semantic

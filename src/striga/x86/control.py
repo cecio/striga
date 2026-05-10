@@ -11,11 +11,12 @@ def bool_eq(sem: Semantics, lhs: Value, rhs: Value) -> Value:
 
 
 def cc_cond(sem: Semantics, cc: str) -> Value:
-    cf = sem.flag_bool("cf")
-    zf = sem.flag_bool("zf")
-    sf = sem.flag_bool("sf")
-    of = sem.flag_bool("of")
-    pf = sem.flag_bool("pf")
+    # TODO: can we do this lazily?
+    cf = sem.flag_read("cf")
+    zf = sem.flag_read("zf")
+    sf = sem.flag_read("sf")
+    of = sem.flag_read("of")
+    pf = sem.flag_read("pf")
 
     match cc:
         case "a" | "nbe":

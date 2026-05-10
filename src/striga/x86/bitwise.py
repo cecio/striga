@@ -16,12 +16,12 @@ def not_(sem: Semantics):
 
 def write_logical_flags(sem: Semantics, result: Value):
     false = sem.const_n(0, 1)
-    sem.write_flag("cf", false)
-    sem.write_flag("pf", sem.result_parity_even(result))
+    sem.flag_write("cf", false)
+    sem.flag_write("pf", sem.result_parity_even(result))
     sem.write_undef_flag("af")
-    sem.write_flag("zf", sem.result_is_zero(result))
-    sem.write_flag("sf", sem.result_sign_bit(result))
-    sem.write_flag("of", false)
+    sem.flag_write("zf", sem.result_is_zero(result))
+    sem.flag_write("sf", sem.result_sign_bit(result))
+    sem.flag_write("of", false)
 
 
 def logical_binop(sem: Semantics, opcode: Opcode):
@@ -84,17 +84,17 @@ def write_shl_flags(sem: Semantics, lhs: Value, count: Value, result: Value):
     cf_shift = sem.ir.sub(count.type.constant(width), safe_count)
     cf = sem.ir.trunc(sem.ir.lshr(lhs, cf_shift), sem.types.i1)
     if width < 32:
-        cf = sem.ir.select(count_in_range, cf, sem.undefined_flag_bool("cf"))
-    sem.write_flag_if(count_nonzero, "cf", cf)
+        cf = sem.ir.select(count_in_range, cf, sem.flag_undefined_bool("cf"))
+    sem.flag_write_if(count_nonzero, "cf", cf)
 
     of_for_one = sem.ir.xor(sem.result_sign_bit(lhs), sem.result_sign_bit(result))
-    of = sem.ir.select(count_one, of_for_one, sem.undefined_flag_bool("of"))
-    sem.write_flag_if(count_nonzero, "of", of)
+    of = sem.ir.select(count_one, of_for_one, sem.flag_undefined_bool("of"))
+    sem.flag_write_if(count_nonzero, "of", of)
 
-    sem.write_flag_if(count_nonzero, "pf", sem.result_parity_even(result))
+    sem.flag_write_if(count_nonzero, "pf", sem.result_parity_even(result))
     sem.write_undef_flag_if(count_nonzero, "af")
-    sem.write_flag_if(count_nonzero, "zf", sem.result_is_zero(result))
-    sem.write_flag_if(count_nonzero, "sf", sem.result_sign_bit(result))
+    sem.flag_write_if(count_nonzero, "zf", sem.result_is_zero(result))
+    sem.flag_write_if(count_nonzero, "sf", sem.result_sign_bit(result))
 
 
 @semantic
@@ -133,18 +133,18 @@ def write_shr_flags(sem: Semantics, lhs: Value, count: Value, result: Value):
     cf_shift = sem.ir.sub(safe_count, count.type.constant(1))
     cf = sem.ir.trunc(sem.ir.lshr(lhs, cf_shift), sem.types.i1)
     if width < 32:
-        cf = sem.ir.select(count_in_range, cf, sem.undefined_flag_bool("cf"))
-    sem.write_flag_if(count_nonzero, "cf", cf)
+        cf = sem.ir.select(count_in_range, cf, sem.flag_undefined_bool("cf"))
+    sem.flag_write_if(count_nonzero, "cf", cf)
 
     of = sem.ir.select(
-        count_one, sem.result_sign_bit(lhs), sem.undefined_flag_bool("of")
+        count_one, sem.result_sign_bit(lhs), sem.flag_undefined_bool("of")
     )
-    sem.write_flag_if(count_nonzero, "of", of)
+    sem.flag_write_if(count_nonzero, "of", of)
 
-    sem.write_flag_if(count_nonzero, "pf", sem.result_parity_even(result))
+    sem.flag_write_if(count_nonzero, "pf", sem.result_parity_even(result))
     sem.write_undef_flag_if(count_nonzero, "af")
-    sem.write_flag_if(count_nonzero, "zf", sem.result_is_zero(result))
-    sem.write_flag_if(count_nonzero, "sf", sem.result_sign_bit(result))
+    sem.flag_write_if(count_nonzero, "zf", sem.result_is_zero(result))
+    sem.flag_write_if(count_nonzero, "sf", sem.result_sign_bit(result))
 
 
 @semantic
@@ -185,12 +185,12 @@ def rol(sem: Semantics):
 
     count_nonzero = sem.ir.icmp(IntPredicate.NE, count, count.type.constant(0))
     cf = sem.ir.trunc(result, sem.types.i1)
-    sem.write_flag_if(count_nonzero, "cf", cf)
+    sem.flag_write_if(count_nonzero, "cf", cf)
 
     count_one = sem.ir.icmp(IntPredicate.EQ, count, count.type.constant(1))
     of_for_one = sem.ir.xor(sem.result_sign_bit(result), cf)
-    of = sem.ir.select(count_one, of_for_one, sem.undefined_flag_bool("of"))
-    sem.write_flag_if(count_nonzero, "of", of)
+    of = sem.ir.select(count_one, of_for_one, sem.flag_undefined_bool("of"))
+    sem.flag_write_if(count_nonzero, "of", of)
 
 
 def write_sar_flags(sem: Semantics, lhs: Value, count: Value, result: Value):
@@ -209,16 +209,16 @@ def write_sar_flags(sem: Semantics, lhs: Value, count: Value, result: Value):
     cf_shift = sem.ir.sub(safe_count, count.type.constant(1))
     shifted_out = sem.ir.trunc(sem.ir.lshr(lhs, cf_shift), sem.types.i1)
     cf = sem.ir.select(count_in_range, shifted_out, sem.result_sign_bit(lhs))
-    sem.write_flag_if(count_nonzero, "cf", cf)
+    sem.flag_write_if(count_nonzero, "cf", cf)
 
     false = sem.const_n(0, 1)
-    of = sem.ir.select(count_one, false, sem.undefined_flag_bool("of"))
-    sem.write_flag_if(count_nonzero, "of", of)
+    of = sem.ir.select(count_one, false, sem.flag_undefined_bool("of"))
+    sem.flag_write_if(count_nonzero, "of", of)
 
-    sem.write_flag_if(count_nonzero, "pf", sem.result_parity_even(result))
+    sem.flag_write_if(count_nonzero, "pf", sem.result_parity_even(result))
     sem.write_undef_flag_if(count_nonzero, "af")
-    sem.write_flag_if(count_nonzero, "zf", sem.result_is_zero(result))
-    sem.write_flag_if(count_nonzero, "sf", sem.result_sign_bit(result))
+    sem.flag_write_if(count_nonzero, "zf", sem.result_is_zero(result))
+    sem.flag_write_if(count_nonzero, "sf", sem.result_sign_bit(result))
 
 
 @semantic
@@ -290,7 +290,7 @@ def bit_test_base_and_mask(sem: Semantics) -> tuple[Value, Value, Value | None]:
 
 
 def write_bit_test_flags(sem: Semantics, base: Value, mask: Value):
-    sem.write_flag(
+    sem.flag_write(
         "cf",
         sem.ir.icmp(IntPredicate.NE, sem.ir.and_(base, mask), base.type.constant(0)),
     )

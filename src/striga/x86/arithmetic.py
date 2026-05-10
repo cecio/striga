@@ -41,10 +41,10 @@ def sub_overflow(sem: Semantics, lhs: Value, rhs: Value, result: Value) -> Value
 
 
 def write_common_arith_flags(sem: Semantics, lhs: Value, rhs: Value, result: Value):
-    sem.write_flag("pf", sem.result_parity_even(result))
-    sem.write_flag("af", aux_carry(sem, lhs, rhs, result))
-    sem.write_flag("zf", sem.result_is_zero(result))
-    sem.write_flag("sf", sem.result_sign_bit(result))
+    sem.flag_write("pf", sem.result_parity_even(result))
+    sem.flag_write("af", aux_carry(sem, lhs, rhs, result))
+    sem.flag_write("zf", sem.result_is_zero(result))
+    sem.flag_write("sf", sem.result_sign_bit(result))
 
 
 def write_add_flags(
@@ -56,9 +56,9 @@ def write_add_flags(
     write_cf: bool = True,
 ):
     if write_cf:
-        sem.write_flag("cf", sem.ir.icmp(IntPredicate.ULT, result, lhs))
+        sem.flag_write("cf", sem.ir.icmp(IntPredicate.ULT, result, lhs))
     write_common_arith_flags(sem, lhs, rhs, result)
-    sem.write_flag("of", add_overflow(sem, lhs, rhs, result))
+    sem.flag_write("of", add_overflow(sem, lhs, rhs, result))
 
 
 def write_sub_flags(
@@ -70,9 +70,9 @@ def write_sub_flags(
     write_cf: bool = True,
 ):
     if write_cf:
-        sem.write_flag("cf", sem.ir.icmp(IntPredicate.ULT, lhs, rhs))
+        sem.flag_write("cf", sem.ir.icmp(IntPredicate.ULT, lhs, rhs))
     write_common_arith_flags(sem, lhs, rhs, result)
-    sem.write_flag("of", sub_overflow(sem, lhs, rhs, result))
+    sem.flag_write("of", sub_overflow(sem, lhs, rhs, result))
 
 
 def arith_binop(sem: Semantics, opcode: Opcode, write_flags: ArithFlagWriter):
@@ -125,16 +125,16 @@ def neg(sem: Semantics):
     zero = dst.type.constant(0)
     result = sem.ir.sub(zero, dst)
     sem.op_write(0, result)
-    sem.write_flag("cf", sem.ir.icmp(IntPredicate.NE, dst, zero))
+    sem.flag_write("cf", sem.ir.icmp(IntPredicate.NE, dst, zero))
     write_common_arith_flags(sem, zero, dst, result)
-    sem.write_flag("of", sub_overflow(sem, zero, dst, result))
+    sem.flag_write("of", sub_overflow(sem, zero, dst, result))
 
 
 @semantic
 def sbb(sem: Semantics):
     dst = sem.op_read(0)
     src = sem.resize_int(sem.op_read(1), dst.type)
-    cf_in = sem.flag_bool("cf")
+    cf_in = sem.flag_read("cf")
     borrow = sem.ir.zext(cf_in, dst.type)
     src_plus_borrow = sem.ir.add(src, borrow)
     result = sem.ir.sub(dst, src_plus_borrow)
@@ -144,9 +144,9 @@ def sbb(sem: Semantics):
         sem.ir.icmp(IntPredicate.ULT, dst, src),
         sem.ir.and_(sem.ir.icmp(IntPredicate.EQ, dst, src), cf_in),
     )
-    sem.write_flag("cf", cf)
+    sem.flag_write("cf", cf)
     write_common_arith_flags(sem, dst, src, result)
-    sem.write_flag("of", sub_overflow(sem, dst, src, result))
+    sem.flag_write("of", sub_overflow(sem, dst, src, result))
 
 
 @semantic
@@ -173,8 +173,8 @@ def write_undef_arith_flags(sem: Semantics):
 
 
 def write_mul_flags(sem: Semantics, overflow: Value):
-    sem.write_flag("cf", overflow)
-    sem.write_flag("of", overflow)
+    sem.flag_write("cf", overflow)
+    sem.flag_write("of", overflow)
     sem.write_undef_flag("sf")
     sem.write_undef_flag("zf")
     sem.write_undef_flag("af")

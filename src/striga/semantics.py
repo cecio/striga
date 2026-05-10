@@ -123,6 +123,7 @@ class Semantics:
         self.reg_types = {
             name: types.int_n(size) for name, size in self.reg_sizes.items()
         }
+        self.reg_indices = {name: i for i, name in enumerate(self.reg_types)}
         state_ty = types.get("State")
         if state_ty is None:
             # TODO: update llvm-nanobind to deduplicate by name
@@ -184,13 +185,12 @@ class Semantics:
             memory.name = "memory"
             state.name = "state"
             self.function = fn
+            self.reg_ptrs = {}
+            self.insn_blocks = {}
 
             entry = fn.append_basic_block("initialize")
             assert fn.last_basic_block == entry
             with entry.create_builder() as ir:
-                for i, name in enumerate(self.reg_sizes.keys()):
-                    reg_ptr = ir.struct_gep(self.state_ty, state, i, name)
-                    self.reg_ptrs[name] = reg_ptr
                 ir.br(self.get_or_create_block(address))
         else:
             self.function = fn
@@ -210,9 +210,6 @@ class Semantics:
                 ):
                     assert insn.name in self.reg_types, "unexpected GEP"
                     self.reg_ptrs[insn.name] = insn
-            assert self.reg_ptrs.keys() == self.reg_types.keys(), (
-                "failed to reconstruct register pointers"
-            )
         return self.function
 
     def cs_disasm(self, address: int, code: bytes) -> CsInsn:
@@ -272,27 +269,38 @@ class Semantics:
     def reg_name(self, reg_id: int) -> str:
         return self.insn.reg_name(reg_id)  # pyright: ignore[reportReturnType]
 
-    def reg_read(self, name: str):
+    def _reg_ptr(self, name: str) -> Value:
         reg_ptr = self.reg_ptrs.get(name)
         if reg_ptr is not None:
-            return self.ir.load(self.reg_types[name], reg_ptr)
+            return reg_ptr
+
+        entry = self.function.entry_block
+        state = self.function.get_param(1)
+        with entry.create_builder() as ir:
+            ir.position_before(entry.terminator)
+            reg_ptr = ir.struct_gep(self.state_ty, state, self.reg_indices[name], name)
+        self.reg_ptrs[name] = reg_ptr
+        return reg_ptr
+
+    def reg_read(self, name: str) -> Value:
+        if name in self.reg_types:
+            return self.ir.load(self.reg_types[name], self._reg_ptr(name))
 
         full_name, size, bit_offset = self.subregs[name]
-        full = self.ir.load(self.reg_types[full_name], self.reg_ptrs[full_name])
+        full = self.ir.load(self.reg_types[full_name], self._reg_ptr(full_name))
         if bit_offset:
             full = self.ir.lshr(full, self.const64(bit_offset))
         return self.ir.trunc(full, self.types.int_n(size))
 
     def reg_write(self, name: str, value: Value):
-        reg_ptr = self.reg_ptrs.get(name)
-        if reg_ptr is not None:
+        if name in self.reg_types:
             assert value.type.int_width == self.reg_sizes[name]
-            self.ir.store(value, reg_ptr)
+            self.ir.store(value, self._reg_ptr(name))
             return
 
         full_name, size, bit_offset = self.subregs[name]
         assert value.type.int_width == size
-        full_ptr = self.reg_ptrs[full_name]
+        full_ptr = self._reg_ptr(full_name)
 
         # x86-64 writes to r32 zero-extend into the enclosing r64 register.
         if size == 32:
@@ -314,7 +322,7 @@ class Semantics:
         store = self.ir.store(value, ptr)
         store.set_inst_alignment(1)
 
-    def mem_read(self, addr: Value, ty: Type):
+    def mem_read(self, addr: Value, ty: Type) -> Value:
         memory = self.function.get_param(0)
         ptr = self.ir.gep(self.types.i8, memory, [addr])
         load = self.ir.load(ty, ptr)
@@ -398,48 +406,48 @@ class Semantics:
     def rflags_value(self) -> Value:
         value = self.const64(1 << 1)  # Reserved bit 1 is always set.
         for name, bit in FLAGS.items():
-            flag = self.ir.zext(self.flag_bool(name), self.i64)
+            flag = self.ir.zext(self.flag_read(name), self.i64)
             if bit:
                 flag = self.ir.shl(flag, self.const64(bit))
             value = self.ir.or_(value, flag)
         return value
 
-    def bool_to_flag(self, value: Value) -> Value:
+    def _bool_to_flag(self, value: Value) -> Value:
         """Convert an LLVM i1 flag predicate to the i8 state representation."""
         if value.type == self.types.i8:
             return value
         assert value.type == self.types.i1
         return self.ir.zext(value, self.types.i8)
 
-    def flag_bool(self, name: str) -> Value:
+    def flag_read(self, name: str) -> Value:
         """Read an i8 flag from state as an LLVM i1 predicate."""
         return self.ir.icmp(IntPredicate.NE, self.reg_read(name), self.const_n(0, 8))
 
-    def write_flag(self, name: str, value: Value):
-        self.reg_write(name, self.bool_to_flag(value))
+    def flag_write(self, name: str, value: Value):
+        self.reg_write(name, self._bool_to_flag(value))
 
-    def write_flag_if(self, cond: Value, name: str, value: Value):
+    def flag_write_if(self, cond: Value, name: str, value: Value):
         """Update a flag only when ``cond`` is true; otherwise preserve it."""
         assert cond.type == self.types.i1
         old_value = self.reg_read(name)
-        new_value = self.bool_to_flag(value)
+        new_value = self._bool_to_flag(value)
         self.reg_write(name, self.ir.select(cond, new_value, old_value))
 
-    def undefined_flag(self, name: str) -> Value:
+    def flag_undefined(self, name: str) -> Value:
         """Call the per-flag helper for architecturally undefined flags."""
         helper = self.undefined_flags[name]
         return self.ir.call(helper, [self.const64(self.insn.address)])
 
-    def undefined_flag_bool(self, name: str) -> Value:
+    def flag_undefined_bool(self, name: str) -> Value:
         return self.ir.icmp(
-            IntPredicate.NE, self.undefined_flag(name), self.const_n(0, 8)
+            IntPredicate.NE, self.flag_undefined(name), self.const_n(0, 8)
         )
 
     def write_undef_flag(self, name: str):
-        self.write_flag(name, self.undefined_flag(name))
+        self.flag_write(name, self.flag_undefined(name))
 
     def write_undef_flag_if(self, cond: Value, name: str):
-        self.write_flag_if(cond, name, self.undefined_flag(name))
+        self.flag_write_if(cond, name, self.flag_undefined(name))
 
     def result_is_zero(self, result: Value) -> Value:
         return self.ir.icmp(IntPredicate.EQ, result, result.type.constant(0))
