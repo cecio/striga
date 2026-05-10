@@ -1,0 +1,102 @@
+from ..semantics import Semantics, semantic, FLAGS
+
+
+@semantic
+def push(sem: Semantics):
+    sem.push(sem.op_read(0))
+
+
+@semantic
+def pop(sem: Semantics):
+    dst_ty = sem.types.int_n(sem.insn.operands[0].size * 8)
+    sem.op_write(0, sem.pop(dst_ty))
+
+
+@semantic
+def pushfq(sem: Semantics):
+    value = sem.const64(1 << 1)  # Reserved bit 1 is always set.
+    for name, bit in FLAGS.items():
+        flag = sem.ir.zext(sem.flag_bool(name), sem.i64)
+        if bit:
+            flag = sem.ir.shl(flag, sem.const64(bit))
+        value = sem.ir.or_(value, flag)
+    sem.push(value)
+
+
+@semantic
+def popfq(sem: Semantics):
+    value = sem.pop(sem.i64)
+    value = sem.resize_int(value, sem.i64)
+    for name, bit in FLAGS.items():
+        flag = sem.ir.trunc(sem.ir.lshr(value, sem.const64(bit)), sem.types.i1)
+        sem.write_flag(name, flag)
+
+
+@semantic
+def mov(sem: Semantics):
+    value = sem.op_read(1)
+    sem.op_write(0, value)
+
+
+@semantic
+def movabs(sem: Semantics):
+    mov(sem)
+
+
+@semantic
+def movzx(sem: Semantics):
+    src = sem.op_read(1)
+    dst_ty = sem.types.int_n(sem.insn.operands[0].size * 8)
+    sem.op_write(0, sem.resize_int(src, dst_ty))
+
+
+@semantic
+def movsx(sem: Semantics):
+    src = sem.op_read(1)
+    dst_ty = sem.types.int_n(sem.insn.operands[0].size * 8)
+    sem.op_write(0, sem.resize_int(src, dst_ty, sign_extend=True))
+
+
+@semantic
+def movsxd(sem: Semantics):
+    movsx(sem)
+
+
+@semantic
+def lea(sem: Semantics):
+    src = sem.op_mem(sem.insn.operands[1])
+    dst_ty = sem.types.int_n(sem.insn.operands[0].size * 8)
+    sem.op_write(0, sem.resize_int(src, dst_ty))
+
+
+@semantic
+def cbw(sem: Semantics):
+    sem.reg_write("ax", sem.ir.sext(sem.reg_read("al"), sem.types.i16))
+
+
+@semantic
+def cwde(sem: Semantics):
+    sem.reg_write("eax", sem.ir.sext(sem.reg_read("ax"), sem.types.i32))
+
+
+@semantic
+def cdqe(sem: Semantics):
+    sem.reg_write("rax", sem.ir.sext(sem.reg_read("eax"), sem.i64))
+
+
+@semantic
+def cwd(sem: Semantics):
+    ax = sem.reg_read("ax")
+    sem.reg_write("dx", sem.ir.ashr(ax, sem.types.i16.constant(15)))
+
+
+@semantic
+def cdq(sem: Semantics):
+    eax = sem.reg_read("eax")
+    sem.reg_write("edx", sem.ir.ashr(eax, sem.types.i32.constant(31)))
+
+
+@semantic
+def cqo(sem: Semantics):
+    rax = sem.reg_read("rax")
+    sem.reg_write("rdx", sem.ir.ashr(rax, sem.const64(63)))
