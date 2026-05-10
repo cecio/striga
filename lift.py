@@ -51,3 +51,5 @@ if __name__ == "__main__":
             print(cfg)
             riscvm_run = lift(module, PE("tests/riscvm.exe"), 0x140001104)
             print(riscvm_run)
+            themida = lift(module, PE("tests/example2-virt.bin"), 0x140001000)
+            print(themida)

@@ -1,4 +1,6 @@
-from ..semantics import Semantics, semantic, FLAGS
+from capstone import CS_OP_REG
+
+from ..semantics import FLAGS, Semantics, semantic
 
 
 @semantic
@@ -14,13 +16,7 @@ def pop(sem: Semantics):
 
 @semantic
 def pushfq(sem: Semantics):
-    value = sem.const64(1 << 1)  # Reserved bit 1 is always set.
-    for name, bit in FLAGS.items():
-        flag = sem.ir.zext(sem.flag_bool(name), sem.i64)
-        if bit:
-            flag = sem.ir.shl(flag, sem.const64(bit))
-        value = sem.ir.or_(value, flag)
-    sem.push(value)
+    sem.push(sem.rflags_value())
 
 
 @semantic
@@ -40,6 +36,21 @@ def mov(sem: Semantics):
 
 @semantic
 def movabs(sem: Semantics):
+    mov(sem)
+
+
+@semantic
+def movaps(sem: Semantics):
+    mov(sem)
+
+
+@semantic
+def movups(sem: Semantics):
+    mov(sem)
+
+
+@semantic
+def movdqa(sem: Semantics):
     mov(sem)
 
 
@@ -67,6 +78,41 @@ def lea(sem: Semantics):
     src = sem.op_mem(sem.insn.operands[1])
     dst_ty = sem.types.int_n(sem.insn.operands[0].size * 8)
     sem.op_write(0, sem.resize_int(src, dst_ty))
+
+
+def operand_reg_name(sem: Semantics, index: int) -> str | None:
+    op = sem.insn.operands[index]
+    if op.type != CS_OP_REG:
+        return None
+    return sem.reg_name(op.reg)
+
+
+@semantic
+def movq(sem: Semantics):
+    dst_name = operand_reg_name(sem, 0)
+    dst_is_xmm = dst_name is not None and dst_name.startswith("xmm")
+    src = sem.op_read(1)
+
+    if dst_is_xmm:
+        if src.type.int_width > 64:
+            low_qword = sem.ir.trunc(src, sem.i64)
+        else:
+            low_qword = sem.resize_int(src, sem.i64)
+        sem.op_write(0, sem.ir.zext(low_qword, sem.types.i128))
+        return
+
+    dst_ty = sem.types.int_n(sem.insn.operands[0].size * 8)
+    sem.op_write(0, sem.resize_int(src, dst_ty))
+
+
+@semantic
+def movlhps(sem: Semantics):
+    dst = sem.op_read(0)
+    src = sem.op_read(1)
+    low_mask = sem.ir.zext(sem.const64(-1), sem.types.i128)
+    low = sem.ir.and_(dst, low_mask)
+    high = sem.ir.shl(sem.ir.and_(src, low_mask), sem.types.i128.constant(64))
+    sem.op_write(0, sem.ir.or_(low, high))
 
 
 @semantic
@@ -100,3 +146,11 @@ def cdq(sem: Semantics):
 def cqo(sem: Semantics):
     rax = sem.reg_read("rax")
     sem.reg_write("rdx", sem.ir.ashr(rax, sem.const64(63)))
+
+
+@semantic
+def xchg(sem: Semantics):
+    src = sem.op_read(1)
+    dst = sem.op_read(0)
+    sem.op_write(0, src)
+    sem.op_write(1, dst)

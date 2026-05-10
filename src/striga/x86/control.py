@@ -1,4 +1,4 @@
-from ..semantics import semantic, Semantics, Successor
+from ..semantics import FLAGS, semantic, Semantics, Successor
 from llvm import Value
 
 
@@ -355,7 +355,7 @@ def jmp(sem: Semantics):
     if dst.is_constant:
         sem.ir.br(sem.get_or_create_block(dst.const_zext_value))
     else:
-        sem.ir.call(sem.indirect_jmp, [dst])
+        sem.ir.call(sem.jmp_handler, [dst])
         sem.ir.ret_void()
     return [Successor(sem.insn.address, dst)]
 
@@ -372,5 +372,23 @@ def ret(sem: Semantics):
 
 
 @semantic
+def syscall(sem: Semantics):
+    fallthrough = sem.insn.address + sem.insn.size
+    saved_flags = sem.rflags_value()
+    sem.reg_write("rcx", sem.const64(fallthrough))
+    sem.reg_write("r11", saved_flags)
+    for name in FLAGS:
+        sem.write_undef_flag(name)
+    sem.ir.call(sem.syscall_handler, [sem.const64(sem.insn.address)])
+    sem.ir.br(sem.get_or_create_block(fallthrough))
+    return [Successor(sem.insn.address, sem.const64(fallthrough))]
+
+
+@semantic
 def nop(sem: Semantics):
+    pass
+
+
+@semantic
+def pause(sem: Semantics):
     pass

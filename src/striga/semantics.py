@@ -66,6 +66,8 @@ FLAGS = {
     "of": 11,
 }
 
+XMM_REGS = [f"xmm{i}" for i in range(32)]
+
 
 class Successor(NamedTuple):
     src: int
@@ -110,6 +112,7 @@ class Semantics:
             **{gpr.r64: 64 for gpr in GPRS},
             "rip": 64,
             "gsbase": 64,
+            **{name: 128 for name in XMM_REGS},
             "cf": 8,
             "zf": 8,
             "sf": 8,
@@ -130,9 +133,10 @@ class Semantics:
         helper_ty = types.function(types.void, [types.i64])
         undefined_flag_ty = types.function(types.i8, [types.i64])
         # TODO: update llvm-nanobind to add module.get_or_insert_function
-        self.indirect_jmp = self.get_or_insert_helper("indirect_jmp", helper_ty)
-        self.call_handler = self.get_or_insert_helper("call", helper_ty)
-        self.ret_handler = self.get_or_insert_helper("ret", helper_ty)
+        self.jmp_handler = self.get_or_insert_helper("__striga_jmp", helper_ty)
+        self.call_handler = self.get_or_insert_helper("__striga_call", helper_ty)
+        self.ret_handler = self.get_or_insert_helper("__striga_ret", helper_ty)
+        self.syscall_handler = self.get_or_insert_helper("__striga_syscall", helper_ty)
         self.undefined_flags = {
             name: self.get_or_insert_helper(f"undefined_{name}", undefined_flag_ty)
             for name in FLAGS
@@ -248,7 +252,11 @@ class Semantics:
             # Each lifted instruction owns writing its own address.
             self.reg_write("rip", self.const64(address))
             handler = _semantics.get(insn.mnemonic)
-            if not handler:
+            if handler is None and insn.mnemonic.startswith("lock "):
+                # LOCK preserves the single-threaded architectural result; the
+                # lifter does not model inter-thread atomicity separately.
+                handler = _semantics.get(insn.mnemonic.removeprefix("lock "))
+            if handler is None:
                 raise NotImplementedError(insn.mnemonic)
 
             successors = handler(self)
@@ -385,6 +393,15 @@ class Semantics:
         value = self.mem_read(rsp, ty)
         rsp_add = self.ir.add(rsp, self.const64(byte_width))
         self.reg_write("rsp", rsp_add)
+        return value
+
+    def rflags_value(self) -> Value:
+        value = self.const64(1 << 1)  # Reserved bit 1 is always set.
+        for name, bit in FLAGS.items():
+            flag = self.ir.zext(self.flag_bool(name), self.i64)
+            if bit:
+                flag = self.ir.shl(flag, self.const64(bit))
+            value = self.ir.or_(value, flag)
         return value
 
     def bool_to_flag(self, value: Value) -> Value:

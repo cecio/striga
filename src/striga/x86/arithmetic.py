@@ -61,8 +61,16 @@ def write_add_flags(
     sem.write_flag("of", add_overflow(sem, lhs, rhs, result))
 
 
-def write_sub_flags(sem: Semantics, lhs: Value, rhs: Value, result: Value):
-    sem.write_flag("cf", sem.ir.icmp(IntPredicate.ULT, lhs, rhs))
+def write_sub_flags(
+    sem: Semantics,
+    lhs: Value,
+    rhs: Value,
+    result: Value,
+    *,
+    write_cf: bool = True,
+):
+    if write_cf:
+        sem.write_flag("cf", sem.ir.icmp(IntPredicate.ULT, lhs, rhs))
     write_common_arith_flags(sem, lhs, rhs, result)
     sem.write_flag("of", sub_overflow(sem, lhs, rhs, result))
 
@@ -100,6 +108,59 @@ def inc(sem: Semantics):
     result = sem.ir.add(dst, src)
     sem.op_write(0, result)
     write_add_flags(sem, dst, src, result, write_cf=False)
+
+
+@semantic
+def dec(sem: Semantics):
+    dst = sem.op_read(0)
+    src = dst.type.constant(1)
+    result = sem.ir.sub(dst, src)
+    sem.op_write(0, result)
+    write_sub_flags(sem, dst, src, result, write_cf=False)
+
+
+@semantic
+def neg(sem: Semantics):
+    dst = sem.op_read(0)
+    zero = dst.type.constant(0)
+    result = sem.ir.sub(zero, dst)
+    sem.op_write(0, result)
+    sem.write_flag("cf", sem.ir.icmp(IntPredicate.NE, dst, zero))
+    write_common_arith_flags(sem, zero, dst, result)
+    sem.write_flag("of", sub_overflow(sem, zero, dst, result))
+
+
+@semantic
+def sbb(sem: Semantics):
+    dst = sem.op_read(0)
+    src = sem.resize_int(sem.op_read(1), dst.type)
+    cf_in = sem.flag_bool("cf")
+    borrow = sem.ir.zext(cf_in, dst.type)
+    src_plus_borrow = sem.ir.add(src, borrow)
+    result = sem.ir.sub(dst, src_plus_borrow)
+    sem.op_write(0, result)
+
+    cf = sem.ir.or_(
+        sem.ir.icmp(IntPredicate.ULT, dst, src),
+        sem.ir.and_(sem.ir.icmp(IntPredicate.EQ, dst, src), cf_in),
+    )
+    sem.write_flag("cf", cf)
+    write_common_arith_flags(sem, dst, src, result)
+    sem.write_flag("of", sub_overflow(sem, dst, src, result))
+
+
+@semantic
+def cmpxchg(sem: Semantics):
+    dst = sem.op_read(0)
+    src = sem.resize_int(sem.op_read(1), dst.type)
+    acc_name = {8: "al", 16: "ax", 32: "eax", 64: "rax"}[dst.type.int_width]
+    acc = sem.reg_read(acc_name)
+    result = sem.ir.sub(acc, dst)
+    equal = sem.result_is_zero(result)
+
+    write_sub_flags(sem, acc, dst, result)
+    sem.reg_write(acc_name, sem.ir.select(equal, acc, dst))
+    sem.op_write(0, sem.ir.select(equal, src, dst))
 
 
 def write_undef_arith_flags(sem: Semantics):

@@ -43,6 +43,13 @@ def xor(sem: Semantics):
 
 
 @semantic
+def xorps(sem: Semantics):
+    dst = sem.op_read(0)
+    src = sem.resize_int(sem.op_read(1), dst.type)
+    sem.op_write(0, sem.ir.xor(dst, src))
+
+
+@semantic
 def or_(sem: Semantics):
     logical_binop(sem, Opcode.Or)
 
@@ -156,6 +163,34 @@ def shr(sem: Semantics):
 
     sem.op_write(0, result)
     write_shr_flags(sem, dst, count, result)
+
+
+@semantic
+def rol(sem: Semantics):
+    dst = sem.op_read(0)
+    width = dst.type.int_width
+    count = masked_shift_count(sem, sem.op_read(1), width)
+    rotate_count = sem.ir.urem(count, count.type.constant(width))
+    rotate_nonzero = sem.ir.icmp(
+        IntPredicate.NE, rotate_count, rotate_count.type.constant(0)
+    )
+    safe_count = sem.ir.select(rotate_nonzero, rotate_count, count.type.constant(1))
+
+    left = sem.ir.shl(dst, safe_count)
+    right_count = sem.ir.sub(count.type.constant(width), safe_count)
+    right = sem.ir.lshr(dst, right_count)
+    rotated = sem.ir.or_(left, right)
+    result = sem.ir.select(rotate_nonzero, rotated, dst)
+    sem.op_write(0, result)
+
+    count_nonzero = sem.ir.icmp(IntPredicate.NE, count, count.type.constant(0))
+    cf = sem.ir.trunc(result, sem.types.i1)
+    sem.write_flag_if(count_nonzero, "cf", cf)
+
+    count_one = sem.ir.icmp(IntPredicate.EQ, count, count.type.constant(1))
+    of_for_one = sem.ir.xor(sem.result_sign_bit(result), cf)
+    of = sem.ir.select(count_one, of_for_one, sem.undefined_flag_bool("of"))
+    sem.write_flag_if(count_nonzero, "of", of)
 
 
 def write_sar_flags(sem: Semantics, lhs: Value, count: Value, result: Value):
@@ -275,6 +310,17 @@ def bt(sem: Semantics):
 def btr(sem: Semantics):
     base, mask, addr = bit_test_base_and_mask(sem)
     result = sem.ir.and_(base, sem.ir.not_(mask))
+    write_bit_test_flags(sem, base, mask)
+    if addr is None:
+        sem.op_write(0, result)
+    else:
+        sem.mem_write(addr, result)
+
+
+@semantic
+def bts(sem: Semantics):
+    base, mask, addr = bit_test_base_and_mask(sem)
+    result = sem.ir.or_(base, mask)
     write_bit_test_flags(sem, base, mask)
     if addr is None:
         sem.op_write(0, result)
