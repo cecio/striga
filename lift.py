@@ -45,9 +45,9 @@ def lift(module: Module, pe: PE, start: int, *, verbose=True):
 if __name__ == "__main__":
     with create_context() as context:
         with context.create_module("lifted") as module:
-            vm_entry = lift(module, PE("crackme.exe"), 0x140017A41)
+            vm_entry = lift(module, PE("tests/binaryshield.exe"), 0x140017A41)
             print(vm_entry)
             cfg = lift(module, PE("tests/cfg.exe"), 0x140001000)
             print(cfg)
-            riscvm_run = lift(module, PE("riscvm.exe"), 0x140001104)
+            riscvm_run = lift(module, PE("tests/riscvm.exe"), 0x140001104)
             print(riscvm_run)

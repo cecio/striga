@@ -80,4 +80,4 @@ def lift_crackme(module: Module, pe: PE):
 if __name__ == "__main__":
     with create_context() as context:
         with context.create_module("binaryshield") as module:
-            lift_crackme(module, PE("crackme.exe"))
+            lift_crackme(module, PE("tests/binaryshield.exe"))
