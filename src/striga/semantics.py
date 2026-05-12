@@ -323,24 +323,29 @@ class Semantics:
         ir = self.ir
         addr_bits = self.insn.addr_size * 8
         addr_ty = self.types.int_n(addr_bits)
-        addr = self.const_n(op.mem.disp, addr_bits)
+        addr: Value | None = None
+
+        index = op.mem.index
+        if index != X86_REG_INVALID:
+            index_name = self.reg_name(index)  # pyright: ignore[reportAssignmentType]
+            index_value = self.resize_int(self.reg_read(index_name), addr_ty)
+            scale_value = addr_ty.constant(op.mem.scale)
+            addr = ir.mul(index_value, scale_value)
 
         base = op.mem.base
         if base != X86_REG_INVALID:
             if base in (X86_REG_RIP, X86_REG_EIP):
                 next_ip = self.insn.address + self.insn.size
-                addr = ir.add(addr, addr_ty.constant(next_ip))
+                base_value = addr_ty.constant(next_ip)
             else:
-                base_name: str = self.reg_name(base)  # pyright: ignore[reportAssignmentType]
+                base_name = self.reg_name(base)  # pyright: ignore[reportAssignmentType]
                 base_value = self.resize_int(self.reg_read(base_name), addr_ty)
-                addr = ir.add(addr, base_value)
+            addr = ir.add(base_value, addr) if addr else base_value
 
-        index = op.mem.index
-        if index != X86_REG_INVALID:
-            index_name: str = self.reg_name(index)  # pyright: ignore[reportAssignmentType]
-            index_value = self.resize_int(self.reg_read(index_name), addr_ty)
-            scale_value = addr_ty.constant(op.mem.scale)
-            addr = ir.add(addr, ir.mul(index_value, scale_value))
+        disp = op.mem.disp
+        if disp != 0 or addr is None:
+            disp_value = addr_ty.constant(disp)
+            addr = ir.add(addr, disp_value) if addr else disp_value
 
         if addr.type != self.i64:
             addr = self.resize_int(addr, self.i64)
