@@ -124,22 +124,17 @@ class Semantics:
             name: types.int_n(size) for name, size in self.reg_sizes.items()
         }
         self.reg_indices = {name: i for i, name in enumerate(self.reg_types)}
-        state_ty = types.get("State")
-        if state_ty is None:
-            # TODO: update llvm-nanobind to deduplicate by name
-            state_ty = types.struct(self.reg_types.values(), name="State")
-        self.state_ty = state_ty
+        self.state_ty = types.struct("State", self.reg_types.values())
         self.lifted_ty = types.function(types.void, [types.ptr, types.ptr])
 
         helper_ty = types.function(types.void, [types.i64])
         undefined_flag_ty = types.function(types.i8, [types.i64])
-        # TODO: update llvm-nanobind to add module.get_or_insert_function
-        self.jmp_handler = self.get_or_insert_helper("__striga_jmp", helper_ty)
-        self.call_handler = self.get_or_insert_helper("__striga_call", helper_ty)
-        self.ret_handler = self.get_or_insert_helper("__striga_ret", helper_ty)
-        self.syscall_handler = self.get_or_insert_helper("__striga_syscall", helper_ty)
+        self.jmp_handler = self.module.add_function("__striga_jmp", helper_ty)
+        self.call_handler = self.module.add_function("__striga_call", helper_ty)
+        self.ret_handler = self.module.add_function("__striga_ret", helper_ty)
+        self.syscall_handler = self.module.add_function("__striga_syscall", helper_ty)
         self.undefined_flags = {
-            name: self.get_or_insert_helper(f"undefined_{name}", undefined_flag_ty)
+            name: self.module.add_function(f"undefined_{name}", undefined_flag_ty)
             for name in FLAGS
         }
 
@@ -151,13 +146,6 @@ class Semantics:
         # Set per instruction
         self.ir: Builder
         self.insn: CsInsn
-
-    def get_or_insert_helper(self, name: str, ty: Type) -> Function:
-        """Declare a user-provided control-transfer helper if needed."""
-        fn = self.module.get_function(name)
-        if fn is None:
-            fn = self.module.add_function(name, ty)
-        return fn
 
     def const64(self, val: int, sign_extend=False):
         return self.const_n(val, 64, sign_extend)

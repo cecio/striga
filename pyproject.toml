@@ -5,7 +5,7 @@ requires-python = ">=3.12"
 dependencies = [
     "capstone>=5.0.7",
     "icicle-emu>=0.0.11",
-    "llvm-nanobind",
+    "llvm",
     "pefile>=2024.8.26",
 ]
 
@@ -13,8 +13,13 @@ dependencies = [
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[[tool.uv.index]]
+name = "testpypi"
+url = "https://test.pypi.org/simple/"
+explicit = true
+
 [tool.uv.sources]
-llvm-nanobind = { git = "https://github.com/LLVMParty/llvm-nanobind" }
+llvm = { index = "testpypi" }
 
 [dependency-groups]
 dev = [
