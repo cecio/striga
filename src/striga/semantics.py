@@ -210,7 +210,7 @@ class Semantics:
         if block is None:
             block = self.function.append_basic_block(f"insn_{hex(address)}")
             with block.create_builder() as ir:
-                ir.unreachable()
+                ir.ret_void()
             self.insn_blocks[address] = block
         assert block.function == self.function
         return block
@@ -225,7 +225,7 @@ class Semantics:
         # lifted in this module; do not append a second terminator.
         block = self.get_or_create_block(address)
         assert block.first_instruction
-        if block.first_instruction.opcode == Opcode.Unreachable:
+        if block.first_instruction.opcode == Opcode.Ret:
             block.first_instruction.erase_from_parent()
         else:
             return []
