@@ -1,10 +1,15 @@
-# LLVM IR cheat sheet for Striga
+# LLVM IR glossary / cheat sheet for Striga
 
-Use this page when reading or changing the lifter. It covers the LLVM IR patterns emitted by this repository, centered on `src/striga/semantics.py` and `src/striga/x86/*.py`.
+This page explains the LLVM IR vocabulary needed to read Striga output and the Python code that emits it. It assumes the reader knows x86-64 better than LLVM.
 
-## Execution model
+Striga lifts x86-64 instructions into LLVM IR with two explicit pieces of machine state:
 
-Striga lifts one x86-64 start address to one internal LLVM function:
+- `%memory`: a byte-addressed emulated memory region.
+- `%state`: a `%State` struct containing registers, XMM registers, `gsbase`, `rip`, and tracked flags.
+
+## Striga IR at a glance
+
+A lifted function usually looks like this:
 
 ```llvm
 define internal void @lifted_0x140016000(ptr %memory, ptr %state) {
@@ -29,16 +34,128 @@ insn_0x140016002:
 }
 ```
 
-The two function parameters are the whole machine model:
+How to read it:
 
-- `%memory`: flat byte-addressed emulated memory. x86 addresses are offsets from this pointer.
-- `%state`: pointer to `%State`, the mutable register/flag struct.
+| IR | Meaning in Striga |
+|---|---|
+| `define internal void @lifted_0x140016000(...)` | Lifted function for the start address `0x140016000`. |
+| `ptr %memory` | Pointer to emulated memory. |
+| `ptr %state` | Pointer to the machine-state struct. |
+| `initialize:` | Entry block. Striga creates pointers to state fields here. |
+| `%rip = getelementptr ...` | Compute the address of the `rip` field inside `%State`. |
+| `br label %insn_0x140016000` | Jump from the entry block to the first lifted instruction block. |
+| `insn_0x140016000:` | Basic block for one x86 instruction address. |
+| `store i64 5368799232, ptr %rip` | Write the current instruction address to `rip`. |
+| `%0 = load i64, ptr %r15` | Read architectural `r15`. |
+| `%2 = sub i64 %1, 8` | Compute `rsp - 8`. |
+| `store i64 %2, ptr %rsp` | Write architectural `rsp`. |
+| `%3 = getelementptr i8, ptr %memory, i64 %2` | Compute emulated memory address `%memory + %2`. |
+| `store i64 %0, ptr %3, align 1` | Store the pushed value to emulated memory. |
+| `unreachable` | Placeholder for a block that has not been filled yet, or a path LLVM may treat as impossible. |
 
-Each lifted instruction usually lives in a block named `insn_0x...`. `Semantics.lift_bytes()` writes `rip` as the address of the instruction being lifted. Fallthrough blocks may start as `unreachable` placeholders until the worklist lifts them.
+## Glossary
 
-## `%State` layout
+| Term | Meaning | Striga example |
+|---|---|---|
+| LLVM IR | Low-level typed intermediate representation used by LLVM. | The `.ll` text printed by `str(module)`. |
+| Context | Owner for LLVM types, constants, and modules. | `with create_context() as context:` |
+| Module | Top-level IR container. | Holds `%State`, lifted functions, and helper declarations. |
+| Type | Static type of a value. | `i64`, `i1`, `ptr`, `%State`. |
+| Value | Anything usable as an operand. | Constants, parameters, functions, instruction results. |
+| Constant | Value known at IR construction time. | `i64 5368799232`, `sem.const64(address)`. |
+| Function | Callable IR unit. | `@lifted_0x...`, `@__striga_jmp`. |
+| Parameter | Function input value. | `%memory`, `%state`. |
+| Basic block | Label plus straight-line instructions ending in a terminator. | `initialize`, `insn_0x140016000`. |
+| Instruction | Operation inside a basic block. | `load`, `store`, `sub`, `br`. |
+| Terminator | Final instruction of a basic block. | `br`, `cond_br`, `ret void`, `unreachable`. |
+| SSA value | Named result with exactly one definition. | `%0`, `%1`, `%2`. |
+| CFG | Control-flow graph of basic blocks. | Branches between `insn_0x...` blocks. |
+| GEP | `getelementptr`, LLVM pointer arithmetic. | Computes `%memory + address` or a `%State` field pointer. |
+| Opaque pointer | LLVM pointer type with no pointee type attached. | `ptr` in LLVM 21. |
+| Predicate | Boolean comparison result. | `icmp eq ...` returns `i1`. |
+| `select` | Conditional value instruction. | Used for `cmovcc` and conditional flag updates. |
+| `phi` | Value chosen from predecessor blocks. | Rare in Striga output because registers live in `%state`. |
+| Linkage | Visibility of a global/function. | `internal` makes lifted functions private to the module. |
+| Declaration | Function prototype with no body. | `declare void @__striga_jmp(i64)`. |
+| Definition | Function with a body. | `define internal void @lifted_... { ... }`. |
+| Verifier | LLVM structural checker. | `module.verify_or_raise()`. |
+| Builder | Python object that appends IR instructions. | `with block.create_builder() as ir:` and `sem.ir`. |
 
-`Semantics.__init__()` builds `%State` from `self.reg_types`. LLVM struct fields are addressed by index; Striga maps names to indices with `self.reg_indices`.
+## Reading LLVM syntax
+
+| Syntax | Meaning |
+|---|---|
+| `; comment` | Comment. |
+| `@name` | Global symbol: function or global variable. |
+| `%name` | Local value, basic block label, or named type depending on context. |
+| `%0`, `%1` | Auto-numbered SSA values. |
+| `i64 8` | Typed integer literal. |
+| `ptr %state` | Pointer-typed value. |
+| `label %target` | Basic block target. |
+| `declare ... @f(...)` | External function prototype. |
+| `define ... @f(...) { ... }` | Function body. |
+| `%State = type { ... }` | Named struct type. |
+| `align 1` | Alignment assumption on a load/store. |
+| `inbounds`, `nuw` | LLVM semantic attributes printed on some GEPs. |
+
+## Types used by Striga
+
+LLVM IR is strongly typed. Operand types must match exactly for most instructions.
+
+| LLVM type | Binding | Use in Striga |
+|---|---|---|
+| `void` | `types.void` | Function returns with no value. |
+| `i1` | `types.i1` | Booleans: comparisons, branch conditions, `select` conditions. |
+| `i8` | `types.i8` | Bytes and stored flag fields. |
+| `i16` | `types.i16` | 16-bit operands. |
+| `i32` | `types.i32` | 32-bit operands. |
+| `i64` | `types.i64` | 64-bit GPRs and addresses. |
+| `i128` | `types.i128` | XMM register storage. |
+| `ptr` | `types.ptr` | LLVM 21 opaque pointer. |
+| `%State` | `types.struct("State", ...)` | Machine-state struct. |
+| `void (ptr, ptr)` | `types.function(types.void, [types.ptr, types.ptr])` | Lifted function type. |
+
+Common integer casts:
+
+| Cast | Meaning | Striga use |
+|---|---|---|
+| `trunc` | Keep low bits while shrinking width. | Reading `al` from `rax`. |
+| `zext` | Zero-extend to a wider integer. | Writing `eax` clears the high half of `rax`. |
+| `sext` | Sign-extend to a wider integer. | `movsx`, `movsxd`, signed multiply operands. |
+
+LLVM integer signedness is part of the operation:
+
+| Unsigned operation | Signed operation |
+|---|---|
+| `icmp ult` | `icmp slt` |
+| `icmp ugt` | `icmp sgt` |
+| `udiv` / `urem` | `sdiv` / `srem` |
+| `lshr` | `ashr` |
+
+## SSA and state
+
+LLVM local values are in SSA form: each SSA name has exactly one definition.
+
+```llvm
+%1 = load i64, ptr %rsp
+%2 = sub i64 %1, 8
+store i64 %2, ptr %rsp
+```
+
+`%1` and `%2` are immutable SSA values. The `store` changes the memory location pointed to by `%rsp`; it never changes `%1` or `%2`.
+
+Architectural state in Striga lives in memory-like locations:
+
+- Registers and flags are fields in `%State`.
+- x86 memory is under `%memory`.
+- Reads use `load`.
+- Writes use `store`.
+
+A later block reads the current register value by loading the same `%State` field. This is why Striga output rarely needs `phi` instructions.
+
+## `%State` fields
+
+`%State` is a struct. Striga creates field pointers with `getelementptr` in the `initialize` block.
 
 Current field order:
 
@@ -48,130 +165,80 @@ Current field order:
 4. `xmm0` through `xmm31` as `i128`.
 5. `cf`, `zf`, `sf`, `of`, `pf`, `af` as `i8`.
 
-Register-pointer GEPs are inserted lazily in `initialize`, immediately before its branch terminator.
-
-Subregister behavior is encoded in `reg_read()` and `reg_write()`:
-
-- `eax`, `ax`, `al`, and similar low subregisters use truncation and masking.
-- `ah`, `bh`, `ch`, and `dh` use an 8-bit shift offset.
-- 32-bit GPR writes zero-extend into the enclosing 64-bit register.
-- Narrow writes merge the changed bits with the old full register value.
-
-## SSA and mutable state
-
-LLVM IR uses SSA for local register values: every local SSA name has exactly one definition.
+Example:
 
 ```llvm
-%1 = load i64, ptr %rsp
-%2 = sub i64 %1, 8
-store i64 %2, ptr %rsp
+%rax = getelementptr inbounds nuw %State, ptr %state, i32 0, i32 0
+%rip = getelementptr inbounds nuw %State, ptr %state, i32 0, i32 16
 ```
 
-Here `%rsp` names the pointer to the `rsp` field. `%1` is the loaded architectural value. `%2` is the new value. The `store` updates `%State`; it leaves `%1` and `%2` unchanged.
+`%rax` and `%rip` are pointers to fields. A `load` gets the register value. A `store` writes it.
 
-Striga keeps architectural registers in `%state`. At a CFG join, the next block can load the current field value. Phi nodes become necessary if the lifter scalarizes registers across basic blocks.
+Flags are stored as `i8` fields because they are part of `%State`. Flag calculations use `i1` predicates. `flag_read()` loads an `i8` and compares it with zero. `flag_write()` converts `i1` back to `i8` when needed.
 
-## LLVM object map
+## GEP: `getelementptr`
 
-| Concept | Binding | Use in Striga |
-|---|---|---|
-| Context | `create_context()` | Owns types and modules. Objects from different contexts are incompatible. |
-| Module | `context.create_module(...)` | Holds lifted functions, helper declarations, and `%State`. |
-| Type | `context.types` | Provides `i64`, `ptr`, `int_n(bits)`, `struct(...)`, `function(...)`. |
-| Value | `Value` | Constants, parameters, instruction results, globals, and functions. |
-| Function | `module.add_function(...)` | Lifted functions and helper declarations. |
-| Basic block | `append_basic_block(...)` | Labelled instruction sequence ending in a terminator. |
-| Builder | `block.create_builder()` | Insertion cursor for instructions. Current semantics use `sem.ir`. |
-| Verifier | `module.verify_or_raise()` | Checks IR structure after lifting. |
+GEP computes a pointer. It performs address arithmetic according to an element type.
 
-Use LLVM objects only while their context/module managers are alive.
-
-## Types, casts, and signedness
-
-Common types:
-
-| LLVM | Binding | Use |
-|---|---|---|
-| `void` | `types.void` | No return value. |
-| `i1` | `types.i1` | Conditions, comparisons, `select`. |
-| `i8` | `types.i8` | Bytes and stored flags. |
-| `i16`, `i32`, `i64` | `types.i16`, `types.i32`, `types.i64` | Integer registers and operands. |
-| `i128` | `types.i128` | XMM storage as a bit-vector. |
-| `ptr` | `types.ptr` | LLVM 21 opaque pointer. |
-| `%State` | `types.struct("State", ...)` | Machine-state struct. |
-| `void (ptr, ptr)` | `types.function(types.void, [types.ptr, types.ptr])` | Lifted function type. |
-
-LLVM requires explicit integer resizing. `Semantics.resize_int(value, ty, sign_extend=False)` emits:
-
-- `trunc` when the source is wider.
-- `zext` when the source is narrower and `sign_extend=False`.
-- `sext` when the source is narrower and `sign_extend=True`.
-
-Integer types have no signedness tag. Signedness comes from the operation:
-
-- Unsigned: `icmp ULT`, `icmp UGT`, `udiv`, `urem`, `lshr`.
-- Signed: `icmp SLT`, `icmp SGT`, `sdiv`, `srem`, `ashr`.
-
-`op_read()` creates immediates with the operand size reported by Capstone. Instruction handlers choose zero-extension or sign-extension when resizing those immediates.
-
-## Memory and GEP
-
-`getelementptr` computes an address. Loads and stores access memory.
-
-Emulated memory uses byte indexing:
-
-```python
-ptr = sem.ir.gep(sem.types.i8, memory, [addr])
-load = sem.ir.load(ty, ptr)
-load.set_inst_alignment(1)
-```
-
-Generated IR:
+### Emulated memory
 
 ```llvm
 %ptr = getelementptr i8, ptr %memory, i64 %addr
 %value = load i64, ptr %ptr, align 1
 ```
 
-The `i8` element type makes the index scale by one byte. Striga sets `align 1` for x86 memory operations because x86 permits unaligned memory access.
+The element type is `i8`, so the index is scaled by one byte. This matches x86 byte-addressed memory.
 
-State fields use `struct_gep`:
+Striga sets `align 1` for emulated x86 memory operations because x86 permits unaligned memory access.
 
-```python
-reg_ptr = ir.struct_gep(self.state_ty, state, self.reg_indices["rax"], "rax")
-```
-
-Generated IR:
+### `%State` fields
 
 ```llvm
-%rax = getelementptr inbounds nuw %State, ptr %state, i32 0, i32 0
+%rsp = getelementptr inbounds nuw %State, ptr %state, i32 0, i32 6
+%old = load i64, ptr %rsp, align 4
 ```
 
-LLVM 21 opaque pointers store no pointee type, so GEP receives the source element type (`i8` or `%State`) as an explicit argument.
+The first index steps into the struct object. The second index selects a field. LLVM 21 uses opaque `ptr`, so the GEP includes `%State` as the source element type.
 
-`op_mem()` computes x86 effective addresses:
+## Loads and stores
 
-- base + index * scale + displacement
-- RIP-relative addressing with `next_ip = insn.address + insn.size`
-- address-size truncation/extension through `self.insn.addr_size`
-- GS-relative addressing by adding `gsbase`
+| IR | Meaning |
+|---|---|
+| `%x = load i64, ptr %rax` | Read an `i64` from the address held in `%rax`. |
+| `store i64 %x, ptr %rax` | Write `%x` to the address held in `%rax`. |
+| `%p = getelementptr i8, ptr %memory, i64 %addr` | Compute an emulated memory pointer. |
+| `store i32 %v, ptr %p, align 1` | Write a 32-bit value to emulated memory. |
 
-## CFG construction
+A pointer value such as `%rax` or `%p` is separate from the memory stored at that address.
 
-`Semantics.begin(address)` creates or reuses `lifted_<hex(address)>`, creates `initialize`, and branches to the first instruction block.
+## Conditions and branches
 
-`get_or_create_block(address)` creates `insn_<hex(address)>` with an `unreachable` placeholder. `lift_bytes()` removes the placeholder before emitting the instruction. If a block already has a non-placeholder first instruction, `lift_bytes()` returns an empty successor list.
+LLVM comparisons return `i1`:
 
-Handler return convention:
+```llvm
+%is_zero = icmp eq i64 %result, 0
+```
 
-- Return `None` after straight-line semantics. `lift_bytes()` adds a fallthrough branch.
-- Emit a terminator and return `list[Successor]` for control-flow instructions.
+`cond_br` uses an `i1` condition and changes control flow:
 
-`lift.lift()` uses `Successor(src, dst)` as a worklist item. Constant destinations inside the PE image are lifted. Non-constant destinations are reported in verbose mode and skipped by the worklist.
+```llvm
+br i1 %cond, label %taken, label %fallthrough
+```
+
+`select` uses an `i1` condition and chooses a value inside the current block:
+
+```llvm
+%x = select i1 %cond, i64 %new, i64 %old
+```
+
+Striga uses:
+
+- `cond_br` for x86 conditional jumps.
+- `select` for `cmovcc`, `setcc`, and conditional flag updates.
 
 ## Helper declarations
 
-`Semantics.__init__()` declares helper functions for escapes and undefined x86 flags:
+Striga declares helper functions for control-flow events and undefined x86 flags:
 
 ```llvm
 declare void @__striga_jmp(i64)
@@ -187,94 +254,80 @@ declare i1 @__striga_undef_sf(i64)
 declare i1 @__striga_undef_of(i64)
 ```
 
-Current control-flow contracts:
+A `declare` line gives LLVM the function type. The body is supplied by the consumer, interpreter, runtime, or later analysis.
 
-- Dynamic `jmp`: call `__striga_jmp(dst)`, then `ret void`.
-- `call`: push fallthrough, call `__striga_call(dst)`, branch to fallthrough.
-- `ret`: pop destination, adjust `rsp` for `ret imm`, call `__striga_ret(dst)`, then `ret void`.
-- `syscall`: save fallthrough to `rcx`, save packed flags to `r11`, mark tracked flags undefined, call `__striga_syscall(insn.address)`, branch to fallthrough.
+Undefined x86 flags are represented by calls such as `__striga_undef_cf(address)`. These calls are Striga modeling hooks. LLVM `undef` and `poison` are separate IR concepts.
 
-Undefined x86 flags are modeled with helper calls so an executor or analysis can define their behavior. LLVM `undef` and `poison` are separate IR concepts.
+## Blocks, terminators, and placeholders
 
-## Flags
+Every LLVM basic block ends with one terminator.
 
-Tracked flags are stored as `i8` fields and computed as `i1` predicates.
+Common terminators in Striga output:
 
-| Helper | Behavior |
+| Terminator | Meaning |
 |---|---|
-| `flag_read(name)` | Load stored `i8`, compare against zero, return `i1`. |
-| `flag_write(name, value)` | Accept `i1` or `i8`, store `i8`. |
-| `flag_write_if(cond, name, value)` | Preserve old flag unless `cond` is true. |
-| `flag_undef(name)` | Call `__striga_undef_<name>(insn.address)`, return `i1`. |
-| `rflags_value()` | Pack tracked flags into `i64`; set reserved bit 1. |
+| `br label %next` | Unconditional jump to another block. |
+| `br i1 %cond, label %t, label %f` | Conditional jump. |
+| `ret void` | Return from the lifted function. |
+| `unreachable` | Control reaching this point is impossible under the IR semantics. |
 
-Condition-code logic in `src/striga/x86/control.py` combines these predicates. Example for `ja` / `nbe`:
+Striga creates placeholder blocks with `unreachable` before it lifts the corresponding x86 instruction. Generated IR can contain these placeholders when a fallthrough or branch target has been discovered but not emitted yet.
 
-```python
-return sem.ir.and_(bool_not(sem, cf), bool_not(sem, zf))
-```
+## Builder API cheat sheet
 
-## Common builder operations
+The Python builder is the API that appends LLVM instructions. These calls appear throughout `src/striga/x86/*.py`:
 
-`sem.ir` is the current builder. Frequent calls:
+| Python | LLVM instruction |
+|---|---|
+| `ir.add(a, b)` | `add` |
+| `ir.sub(a, b)` | `sub` |
+| `ir.mul(a, b)` | `mul` |
+| `ir.and_(a, b)` | `and` |
+| `ir.or_(a, b)` | `or` |
+| `ir.xor(a, b)` | `xor` |
+| `ir.icmp(pred, a, b)` | `icmp` |
+| `ir.select(c, a, b)` | `select` |
+| `ir.load(ty, ptr)` | `load` |
+| `ir.store(value, ptr)` | `store` |
+| `ir.gep(elem_ty, ptr, indices)` | `getelementptr` |
+| `ir.struct_gep(struct_ty, ptr, index, name)` | Struct-field `getelementptr` |
+| `ir.trunc(value, ty)` | `trunc` |
+| `ir.zext(value, ty)` | `zext` |
+| `ir.sext(value, ty)` | `sext` |
+| `ir.br(block)` | `br` |
+| `ir.cond_br(cond, t, f)` | Conditional `br` |
+| `ir.ret_void()` | `ret void` |
+| `ir.unreachable()` | `unreachable` |
+| `ir.call(fn, args)` | `call` |
 
-- Arithmetic/bitwise: `add`, `sub`, `mul`, `and_`, `or_`, `xor`, `not_`.
-- Comparisons and values: `icmp`, `select`.
-- Memory/addressing: `load`, `store`, `gep`, `struct_gep`.
-- Casts: `trunc`, `zext`, `sext`.
-- Shifts/division: `shl`, `lshr`, `ashr`, `udiv`, `urem`, `sdiv`, `srem`.
-- Control flow: `br`, `cond_br`, `ret_void`, `unreachable`, `call`.
-- Generic binary op dispatch: `binop(Opcode.Add, lhs, rhs)` and similar.
+`Opcode` is used when a semantic wants a generic binary operation, such as `sem.ir.binop(Opcode.Add, dst, src)`, or when Striga checks whether an existing placeholder instruction is `Opcode.Unreachable`.
 
-`Opcode` is also used to inspect existing instructions, such as detecting placeholder `Opcode.Unreachable` blocks.
+## LLVM semantic hazards visible in Striga IR
 
-## LLVM semantic hazards
+LLVM has undefined and poison semantics that are stricter than x86 behavior.
 
-LLVM IR has stricter undefined/poison rules than x86 machine execution:
+| LLVM feature | Why it matters here |
+|---|---|
+| Shift by count >= bit width | Can produce poison. Striga masks x86 shift counts and guards narrow operands. |
+| Division | Division by zero and signed overflow cases have undefined behavior in LLVM. Current `div`/`idiv` IR omits x86 exception behavior. |
+| `unreachable` | Lets LLVM assume control never reaches that point. Placeholder use is safe only before later filling or analysis that understands it. |
+| `inbounds`, `nuw` | These are semantic promises, not formatting. LLVM can optimize based on them. |
+| LLVM `undef` / `poison` | Different from Striga's `__striga_undef_*` helper calls for x86 undefined flags. |
 
-- Shift counts greater than or equal to the bit width can produce poison. `src/striga/x86/bitwise.py` masks x86 counts and adds guards for narrow operands.
-- LLVM division has undefined behavior for division by zero and signed overflow cases. Current `div` and `idiv` handlers emit LLVM division directly, so x86 exception behavior is omitted.
-- `unreachable` asserts impossible control flow. Striga uses it for placeholders and for helper-terminated paths.
-- No-wrap flags and `inbounds` facts strengthen IR semantics. GEP attributes printed by the binding should be treated as semantic facts, not decoration.
-- The verifier checks malformed IR; it does not prove x86 semantic correctness.
+The LLVM verifier checks IR shape and type rules. It does not check that the lifted code matches x86 semantics.
 
-Modeling limitations visible in current code:
+## Quick lookup: Striga names in IR
 
-- `lock` prefixes preserve single-threaded instruction results; inter-thread atomicity is not modeled.
-- Dynamic branch destinations are helper calls plus worklist skips.
-- SIMD support is a small set of bit-vector moves/logical operations over `i128`.
-- `popfq` restores only the tracked flag fields.
-
-## Instruction semantic pattern
-
-Straight-line instruction handlers usually follow this shape:
-
-```python
-dst = sem.op_read(0)
-src = sem.resize_int(sem.op_read(1), dst.type)
-result = sem.ir.add(dst, src)
-sem.op_write(0, result)
-write_add_flags(sem, dst, src, result)
-# Return None: lift_bytes() emits the fallthrough branch.
-```
-
-Control-flow handlers emit their own terminator and return successors:
-
-```python
-sem.ir.cond_br(cond, true_block, false_block)
-return [
-    Successor(src, sem.const64(true_addr)),
-    Successor(src, sem.const64(false_addr)),
-]
-```
-
-## Editing checklist
-
-- Every block needs one terminator.
-- `cond_br` and `select` conditions must be `i1`.
-- Integer widths must match before arithmetic, comparisons, stores, and calls.
-- Use signed predicates/ops only when the x86 instruction requires signed semantics.
-- Use `align 1` for x86 memory loads/stores.
-- Mask or guard shift counts before emitting LLVM shifts.
-- Preserve x86 subregister semantics, especially 32-bit zero-extension and high-8 registers.
-- Run `module.verify_or_raise()` after new emission paths.
+| Name pattern | Meaning |
+|---|---|
+| `@lifted_0x...` | Lifted function for a start address. |
+| `%memory` | Emulated memory pointer parameter. |
+| `%state` | Machine-state pointer parameter. |
+| `%rax`, `%rsp`, `%cf` in `initialize` | Pointers to `%State` fields. |
+| `%0`, `%1`, `%2` | Temporary SSA values. |
+| `insn_0x...` | Basic block for an x86 instruction address. |
+| `@__striga_jmp` | Dynamic jump escape hook. |
+| `@__striga_call` | Call hook. |
+| `@__striga_ret` | Return hook. |
+| `@__striga_syscall` | Syscall hook. |
+| `@__striga_undef_*` | Hook for an undefined x86 flag value. |
