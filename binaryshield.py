@@ -71,9 +71,10 @@ def lift_crackme(module: Module, pe: PE):
         0x14001676B,
     ]
     for handler in vm_handlers:
-        lift(module, pe, handler, verbose=False)
+        lifted = lift(module, pe, handler, verbose=False)
+        print(lifted.name)
 
-    with open("binaryshield.ll", "w") as f:
+    with open("tests/binaryshield.ll", "w") as f:
         f.write(str(module))
 
 

@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.12"
 
 [[package]]
@@ -36,7 +36,7 @@ wheels = [
 [[package]]
 name = "llvm"
 version = "21.1.6.1"
-source = { registry = "https://test.pypi.org/simple" }
+source = { registry = "https://test.pypi.org/simple/" }
 sdist = { url = "https://test-files.pythonhosted.org/packages/58/34/143a0bc81108b24c27233cdc345842029dee9834d078abd93e05a971c045/llvm-21.1.6.1.tar.gz", hash = "sha256:e509983ded55e41df968567c8ffd77b77cccdbdfffbb0f9838000980cfa03706", size = 631170, upload-time = "2026-05-12T13:19:51.468Z" }
 wheels = [
     { url = "https://test-files.pythonhosted.org/packages/56/50/c8ccfa2720b7bd82580792bd76c5c23839ef6e87b818ba2dcf8eaf61b7dd/llvm-21.1.6.1-cp312-abi3-macosx_13_0_arm64.whl", hash = "sha256:e5e8e0d45fdb0e70e2e1a8bd6a89e4996e6386863cf1921aa967158168308df7", size = 43911020, upload-time = "2026-05-12T13:19:34.549Z" },
@@ -100,7 +100,7 @@ dev = [
 requires-dist = [
     { name = "capstone", specifier = ">=5.0.7" },
     { name = "icicle-emu", specifier = ">=0.0.11" },
-    { name = "llvm", index = "https://test.pypi.org/simple" },
+    { name = "llvm", index = "https://test.pypi.org/simple/" },
     { name = "pefile", specifier = ">=2024.8.26" },
 ]
 
