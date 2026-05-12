@@ -2,6 +2,10 @@
 
 Striga is an experimental lifter from x86_64 to LLVM IR written in Python.
 
+## Documentation
+
+- [LLVM IR glossary / cheat sheet for Striga](docs/llvm-cheatsheet.md)
+
 ## Requirements
 
 - [uv](https://astral.sh/uv)
