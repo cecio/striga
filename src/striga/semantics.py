@@ -308,13 +308,13 @@ class Semantics:
         memory = self.function.get_param(0)
         ptr = self.ir.gep(self.types.i8, memory, [addr])
         store = self.ir.store(value, ptr)
-        store.set_inst_alignment(1)
+        store.inst_alignment = 1
 
     def mem_read(self, addr: Value, ty: Type) -> Value:
         memory = self.function.get_param(0)
         ptr = self.ir.gep(self.types.i8, memory, [addr])
         load = self.ir.load(ty, ptr)
-        load.set_inst_alignment(1)
+        load.inst_alignment = 1
         return load
 
     def op_mem(self, op: X86Op) -> Value:

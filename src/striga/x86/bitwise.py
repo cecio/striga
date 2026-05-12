@@ -136,9 +136,7 @@ def write_shr_flags(sem: Semantics, lhs: Value, count: Value, result: Value):
         cf = sem.ir.select(count_in_range, cf, sem.flag_undef("cf"))
     sem.flag_write_if(count_nonzero, "cf", cf)
 
-    of = sem.ir.select(
-        count_one, sem.result_sign_bit(lhs), sem.flag_undef("of")
-    )
+    of = sem.ir.select(count_one, sem.result_sign_bit(lhs), sem.flag_undef("of"))
     sem.flag_write_if(count_nonzero, "of", of)
 
     sem.flag_write_if(count_nonzero, "pf", sem.result_parity_even(result))
