@@ -128,13 +128,13 @@ class Semantics:
         self.lifted_ty = types.function(types.void, [types.ptr, types.ptr])
 
         helper_ty = types.function(types.void, [types.i64])
-        undefined_flag_ty = types.function(types.i8, [types.i64])
+        undef_flag_ty = types.function(types.i1, [types.i64])
         self.jmp_handler = self.module.add_function("__striga_jmp", helper_ty)
         self.call_handler = self.module.add_function("__striga_call", helper_ty)
         self.ret_handler = self.module.add_function("__striga_ret", helper_ty)
         self.syscall_handler = self.module.add_function("__striga_syscall", helper_ty)
-        self.undefined_flags = {
-            name: self.module.add_function(f"undefined_{name}", undefined_flag_ty)
+        self.undef_flags = {
+            name: self.module.add_function(f"__striga_undef_{name}", undef_flag_ty)
             for name in FLAGS
         }
 
@@ -426,21 +426,15 @@ class Semantics:
         new_value = self._bool_to_flag(value)
         self.reg_write(name, self.ir.select(cond, new_value, old_value))
 
-    def flag_undefined(self, name: str) -> Value:
-        """Call the per-flag helper for architecturally undefined flags."""
-        helper = self.undefined_flags[name]
+    def flag_undef(self, name: str) -> Value:
+        helper = self.undef_flags[name]
         return self.ir.call(helper, [self.const64(self.insn.address)])
 
-    def flag_undefined_bool(self, name: str) -> Value:
-        return self.ir.icmp(
-            IntPredicate.NE, self.flag_undefined(name), self.const_n(0, 8)
-        )
+    def flag_write_undef(self, name: str):
+        self.flag_write(name, self.flag_undef(name))
 
-    def write_undef_flag(self, name: str):
-        self.flag_write(name, self.flag_undefined(name))
-
-    def write_undef_flag_if(self, cond: Value, name: str):
-        self.flag_write_if(cond, name, self.flag_undefined(name))
+    def flag_write_undef_if(self, cond: Value, name: str):
+        self.flag_write_if(cond, name, self.flag_undef(name))
 
     def result_is_zero(self, result: Value) -> Value:
         return self.ir.icmp(IntPredicate.EQ, result, result.type.constant(0))

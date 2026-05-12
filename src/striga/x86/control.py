@@ -379,7 +379,7 @@ def syscall(sem: Semantics):
     sem.reg_write("rcx", sem.const64(fallthrough))
     sem.reg_write("r11", saved_flags)
     for name in FLAGS:
-        sem.write_undef_flag(name)
+        sem.flag_write_undef(name)
     sem.ir.call(sem.syscall_handler, [sem.const64(sem.insn.address)])
     sem.ir.br(sem.get_or_create_block(fallthrough))
     return [Successor(sem.insn.address, sem.const64(fallthrough))]

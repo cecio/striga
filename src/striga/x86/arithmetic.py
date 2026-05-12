@@ -164,21 +164,21 @@ def cmpxchg(sem: Semantics):
 
 
 def write_undef_arith_flags(sem: Semantics):
-    sem.write_undef_flag("cf")
-    sem.write_undef_flag("of")
-    sem.write_undef_flag("sf")
-    sem.write_undef_flag("zf")
-    sem.write_undef_flag("af")
-    sem.write_undef_flag("pf")
+    sem.flag_write_undef("cf")
+    sem.flag_write_undef("of")
+    sem.flag_write_undef("sf")
+    sem.flag_write_undef("zf")
+    sem.flag_write_undef("af")
+    sem.flag_write_undef("pf")
 
 
 def write_mul_flags(sem: Semantics, overflow: Value):
     sem.flag_write("cf", overflow)
     sem.flag_write("of", overflow)
-    sem.write_undef_flag("sf")
-    sem.write_undef_flag("zf")
-    sem.write_undef_flag("af")
-    sem.write_undef_flag("pf")
+    sem.flag_write_undef("sf")
+    sem.flag_write_undef("zf")
+    sem.flag_write_undef("af")
+    sem.flag_write_undef("pf")
 
 
 def signed_wide_mul(sem: Semantics, lhs: Value, rhs: Value) -> tuple[Value, Value]:
