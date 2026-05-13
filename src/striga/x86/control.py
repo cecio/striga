@@ -11,46 +11,45 @@ def bool_eq(sem: Semantics, lhs: Value, rhs: Value) -> Value:
 
 
 def cc_cond(sem: Semantics, cc: str) -> Value:
-    # TODO: can we do this lazily?
-    cf = sem.flag_read("cf")
-    zf = sem.flag_read("zf")
-    sf = sem.flag_read("sf")
-    of = sem.flag_read("of")
-    pf = sem.flag_read("pf")
+    cf = lambda: sem.flag_read("cf")
+    zf = lambda: sem.flag_read("zf")
+    sf = lambda: sem.flag_read("sf")
+    of = lambda: sem.flag_read("of")
+    pf = lambda: sem.flag_read("pf")
 
     match cc:
         case "a" | "nbe":
-            return sem.ir.and_(bool_not(sem, cf), bool_not(sem, zf))
+            return sem.ir.and_(bool_not(sem, cf()), bool_not(sem, zf()))
         case "ae" | "nb" | "nc":
-            return bool_not(sem, cf)
+            return bool_not(sem, cf())
         case "b" | "nae" | "c":
-            return cf
+            return cf()
         case "be" | "na":
-            return sem.ir.or_(cf, zf)
+            return sem.ir.or_(cf(), zf())
         case "e" | "z":
-            return zf
+            return zf()
         case "g" | "nle":
-            return sem.ir.and_(bool_not(sem, zf), bool_eq(sem, sf, of))
+            return sem.ir.and_(bool_not(sem, zf()), bool_eq(sem, sf(), of()))
         case "ge" | "nl":
-            return bool_eq(sem, sf, of)
+            return bool_eq(sem, sf(), of())
         case "l" | "nge":
-            return sem.ir.xor(sf, of)
+            return sem.ir.xor(sf(), of())
         case "le" | "ng":
-            return sem.ir.or_(zf, sem.ir.xor(sf, of))
+            return sem.ir.or_(zf(), sem.ir.xor(sf(), of()))
         case "ne" | "nz":
-            return bool_not(sem, zf)
+            return bool_not(sem, zf())
         case "no":
-            return bool_not(sem, of)
+            return bool_not(sem, of())
         case "np" | "po":
-            return bool_not(sem, pf)
+            return bool_not(sem, pf())
         case "ns":
-            return bool_not(sem, sf)
+            return bool_not(sem, sf())
         case "o":
-            return of
+            return of()
         case "p" | "pe":
-            return pf
+            return pf()
         case "s":
-            return sf
+            return sf()
     raise NotImplementedError(f"condition code {cc}")
 
 
@@ -341,16 +340,6 @@ def jrcxz(sem: Semantics):
 
 
 @semantic
-def call(sem: Semantics):
-    dst = sem.op_read(0)
-    fallthrough = sem.insn.address + sem.insn.size
-    sem.push(sem.const64(fallthrough))
-    sem.ir.call(sem.call_handler, [dst])
-    sem.ir.br(sem.get_or_create_block(fallthrough))
-    return [Successor(sem.insn.address, sem.const64(fallthrough))]
-
-
-@semantic
 def jmp(sem: Semantics):
     dst = sem.op_read(0)
     if dst.is_constant:
@@ -359,6 +348,16 @@ def jmp(sem: Semantics):
         sem.ir.call(sem.jmp_handler, [dst])
         sem.ir.ret_void()
     return [Successor(sem.insn.address, dst)]
+
+
+@semantic
+def call(sem: Semantics):
+    dst = sem.op_read(0)
+    fallthrough = sem.insn.address + sem.insn.size
+    sem.push(sem.const64(fallthrough))
+    sem.ir.call(sem.call_handler, [dst])
+    sem.ir.br(sem.get_or_create_block(fallthrough))
+    return [Successor(sem.insn.address, sem.const64(fallthrough))]
 
 
 @semantic

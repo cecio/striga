@@ -43,15 +43,15 @@ def xor(sem: Semantics):
 
 
 @semantic
+def or_(sem: Semantics):
+    logical_binop(sem, Opcode.Or)
+
+
+@semantic
 def xorps(sem: Semantics):
     dst = sem.op_read(0)
     src = sem.resize_int(sem.op_read(1), dst.type)
     sem.op_write(0, sem.ir.xor(dst, src))
-
-
-@semantic
-def or_(sem: Semantics):
-    logical_binop(sem, Opcode.Or)
 
 
 @semantic

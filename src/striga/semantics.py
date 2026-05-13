@@ -138,7 +138,7 @@ class Semantics:
             for name in FLAGS
         }
 
-        # Set per function lifting
+        # Set per function lifted
         self.insn_blocks: dict[int, BasicBlock] = {}
         self.function: Function
         self.reg_ptrs: dict[str, Value] = {}
@@ -215,22 +215,25 @@ class Semantics:
         assert block.function == self.function
         return block
 
-    def lift_bytes(self, address: int, code: bytes):
+    def lift_bytes(self, address: int, code: bytes) -> list[Successor]:
+        # Ensure we have a function to lift into
+        if not hasattr(self, "function"):
+            self.begin(address)
+
         insn = self.cs_disasm(address, code)
         if self.verbose:
             print(";", hex(insn.address), insn.mnemonic, insn.op_str)
 
-        # Get or create - the block may already exist as a branch target.
-        # If the block is already populated, this function has already been
-        # lifted in this module; do not append a second terminator.
+        # Skip lifting if the block is already populated
         block = self.get_or_create_block(address)
-        assert block.first_instruction
+        assert block.first_instruction, "unreachable"
         if block.first_instruction.opcode == Opcode.Ret:
             block.first_instruction.erase_from_parent()
         else:
             return []
 
         with block.create_builder() as ir:
+            # State used by semantic handlers
             self.ir = ir
             self.insn = insn
             # Intentional: RIP records the current instruction, not the next PC.
@@ -251,6 +254,7 @@ class Semantics:
                 ir.br(self.get_or_create_block(fallthrough))
                 successors = [Successor(address, self.const64(fallthrough))]
 
+            # Make sure the handler produced valid IR
             self.module.verify_or_raise()
             return successors
 
@@ -304,18 +308,18 @@ class Semantics:
             widened = self.ir.shl(widened, self.const64(bit_offset))
         self.ir.store(self.ir.or_(cleared, widened), full_ptr)
 
-    def mem_write(self, addr: Value, value: Value):
-        memory = self.function.get_param(0)
-        ptr = self.ir.gep(self.types.i8, memory, [addr])
-        store = self.ir.store(value, ptr)
-        store.inst_alignment = 1
-
     def mem_read(self, addr: Value, ty: Type) -> Value:
         memory = self.function.get_param(0)
         ptr = self.ir.gep(self.types.i8, memory, [addr])
         load = self.ir.load(ty, ptr)
         load.inst_alignment = 1
         return load
+
+    def mem_write(self, addr: Value, value: Value):
+        memory = self.function.get_param(0)
+        ptr = self.ir.gep(self.types.i8, memory, [addr])
+        store = self.ir.store(value, ptr)
+        store.inst_alignment = 1
 
     def op_mem(self, op: X86Op) -> Value:
         assert op.type == CS_OP_MEM
@@ -381,30 +385,6 @@ class Semantics:
             # TODO: narrow the write?
             self.mem_write(addr, value)
 
-    def push(self, value: Value):
-        byte_width = value.type.int_width // 8
-        rsp = self.reg_read("rsp")
-        rsp_sub = self.ir.sub(rsp, self.const64(byte_width))
-        self.reg_write("rsp", rsp_sub)
-        self.mem_write(rsp_sub, value)
-
-    def pop(self, ty: Type) -> Value:
-        byte_width = ty.int_width // 8
-        rsp = self.reg_read("rsp")
-        value = self.mem_read(rsp, ty)
-        rsp_add = self.ir.add(rsp, self.const64(byte_width))
-        self.reg_write("rsp", rsp_add)
-        return value
-
-    def rflags_value(self) -> Value:
-        value = self.const64(1 << 1)  # Reserved bit 1 is always set.
-        for name, bit in FLAGS.items():
-            flag = self.ir.zext(self.flag_read(name), self.i64)
-            if bit:
-                flag = self.ir.shl(flag, self.const64(bit))
-            value = self.ir.or_(value, flag)
-        return value
-
     def _bool_to_flag(self, value: Value) -> Value:
         """Convert an LLVM i1 flag predicate to the i8 state representation."""
         if value.type == self.types.i8:
@@ -435,6 +415,30 @@ class Semantics:
 
     def flag_write_undef_if(self, cond: Value, name: str):
         self.flag_write_if(cond, name, self.flag_undef(name))
+
+    def push(self, value: Value):
+        byte_width = value.type.int_width // 8
+        rsp = self.reg_read("rsp")
+        rsp_sub = self.ir.sub(rsp, self.const64(byte_width))
+        self.reg_write("rsp", rsp_sub)
+        self.mem_write(rsp_sub, value)
+
+    def pop(self, ty: Type) -> Value:
+        byte_width = ty.int_width // 8
+        rsp = self.reg_read("rsp")
+        value = self.mem_read(rsp, ty)
+        rsp_add = self.ir.add(rsp, self.const64(byte_width))
+        self.reg_write("rsp", rsp_add)
+        return value
+
+    def rflags_value(self) -> Value:
+        value = self.const64(1 << 1)  # Reserved bit 1 is always set.
+        for name, bit in FLAGS.items():
+            flag = self.ir.zext(self.flag_read(name), self.i64)
+            if bit:
+                flag = self.ir.shl(flag, self.const64(bit))
+            value = self.ir.or_(value, flag)
+        return value
 
     def result_is_zero(self, result: Value) -> Value:
         return self.ir.icmp(IntPredicate.EQ, result, result.type.constant(0))
