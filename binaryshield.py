@@ -1,9 +1,9 @@
 from pefile import PE
 from llvm import Module, create_context
-from lift import lift
+from lift import lift_pe
 
 
-def lift_crackme(module: Module, pe: PE):
+def lift_crackme(module: Module, filename: str):
     vm_handlers = [
         0x140016000,
         0x14001604E,
@@ -71,7 +71,7 @@ def lift_crackme(module: Module, pe: PE):
         0x14001676B,
     ]
     for handler in vm_handlers:
-        lifted = lift(module, pe, handler, verbose=False)
+        lifted = lift_pe(module, filename, handler, verbose=False)
         print(lifted.name)
 
     with open("tests/binaryshield.ll", "w") as f:
@@ -81,4 +81,4 @@ def lift_crackme(module: Module, pe: PE):
 if __name__ == "__main__":
     with create_context() as context:
         with context.create_module("binaryshield") as module:
-            lift_crackme(module, PE("tests/binaryshield.exe"))
+            lift_crackme(module, "tests/binaryshield.exe")

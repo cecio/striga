@@ -35,14 +35,15 @@ wheels = [
 
 [[package]]
 name = "llvm-nanobind"
-version = "21.1.6.1"
+version = "21.1.6.3"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/66/b5/2255a7b42ddd154ea3247841f0d6610b634a376ad2e20cc49b91c8d83c22/llvm_nanobind-21.1.6.1.tar.gz", hash = "sha256:b46ba66cabf6f47b4fb988ee77ebf0fb9a52a94df7396400e27dad09c26d05e6", size = 633640, upload-time = "2026-05-12T16:22:33.865Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/78/6e/8501bb26482f231bc22815f4dde05fb05e0c52474cf5c455a211ed847474/llvm_nanobind-21.1.6.3.tar.gz", hash = "sha256:0629ce80418a94b2e1a0019d66372cba86e1327b6c9fd16d63a10aa3c09204e2", size = 645135, upload-time = "2026-05-14T01:06:01.871Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9d/b0/e776e058669e8037b30b7327c7c243be626b67c3e12365be50b5a18846c3/llvm_nanobind-21.1.6.1-cp312-abi3-macosx_13_0_arm64.whl", hash = "sha256:e4263b5570e6877bb2d417c9f7dd10c10107a9f3b9f8847ec31da76a970307da", size = 43911001, upload-time = "2026-05-12T16:22:18.594Z" },
-    { url = "https://files.pythonhosted.org/packages/56/2c/660005a35afea084d76e9bbfaf4c3326de457dbfa7f630fa2a2667839d04/llvm_nanobind-21.1.6.1-cp312-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:5782bd8172cdfd0c0ba8b175137ee860a9fa9208ee9b652b6cfd2def5f6aacf7", size = 58457985, upload-time = "2026-05-12T16:22:22.491Z" },
-    { url = "https://files.pythonhosted.org/packages/9d/55/deb6aa6c2f7b2387541385443b443823cab66b367beb131a7a9567f3c0b4/llvm_nanobind-21.1.6.1-cp312-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:fc45990f16dda0dadbae13e013c069232780ad0131736ccaaaf1f8eb9f66d83e", size = 61753025, upload-time = "2026-05-12T16:22:26.942Z" },
-    { url = "https://files.pythonhosted.org/packages/36/2f/26d6839abd9a112132abc0dfb790b2c76e9d169959ff1580b9ee8c355264/llvm_nanobind-21.1.6.1-cp312-abi3-win_amd64.whl", hash = "sha256:3c18170be22f41b0552c0032ecd863b926e1132ba2f89af8c34a118df2abdc78", size = 44011407, upload-time = "2026-05-12T16:22:31.123Z" },
+    { url = "https://files.pythonhosted.org/packages/b7/03/3ffd26b70fe0db6f6be411b57f396c81a1ee01fcefea6392707192bcdba4/llvm_nanobind-21.1.6.3-cp312-abi3-macosx_13_0_arm64.whl", hash = "sha256:b153bfe4f2008f96dd0395f72e1e4413f8e5d2d9dc254cd51ae49cc48e7f84e9", size = 43962841, upload-time = "2026-05-14T01:05:32.964Z" },
+    { url = "https://files.pythonhosted.org/packages/9e/af/77b62c2dbe20ba8425e1d358da40436599b5540357145a76349098bdb33a/llvm_nanobind-21.1.6.3-cp312-abi3-macosx_13_0_x86_64.whl", hash = "sha256:fa46ac4e99698190eda9b4e6760d21618bac7c814997da63039e959ca7f9e8fa", size = 47013114, upload-time = "2026-05-14T01:05:38.565Z" },
+    { url = "https://files.pythonhosted.org/packages/4d/81/ca1b5ac53c272dcf1f4db98c0b2246c0a532f4eea42193a05e3ded90099b/llvm_nanobind-21.1.6.3-cp312-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:4e4e814a68c7a63c62badc845d0d1941b04a4cdcf11eafc9398e08c3e3a1bc40", size = 58501459, upload-time = "2026-05-14T01:05:44.558Z" },
+    { url = "https://files.pythonhosted.org/packages/1a/85/7830240b5d1bac8bc69c0b039478d2342f2809c0809825f0e3f157571f1d/llvm_nanobind-21.1.6.3-cp312-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:8be86943cd9c7a7e69ac07ee1f948d7971089377831b0c180de9c5ba714f97d7", size = 61796024, upload-time = "2026-05-14T01:05:52.125Z" },
+    { url = "https://files.pythonhosted.org/packages/e9/94/6bce36ab093677ba6643c6a8b9d51bb9893be3c4d9e4604bf797e93077a2/llvm_nanobind-21.1.6.3-cp312-abi3-win_amd64.whl", hash = "sha256:113a38f38201f7af137b3d7e19e1de9571ed7c7e648cb9f184e26471a1457193", size = 44061105, upload-time = "2026-05-14T01:05:58.011Z" },
 ]
 
 [[package]]
@@ -100,7 +101,7 @@ dev = [
 requires-dist = [
     { name = "capstone", specifier = ">=5.0.7" },
     { name = "icicle-emu", specifier = ">=0.0.11" },
-    { name = "llvm-nanobind" },
+    { name = "llvm-nanobind", specifier = "==21.1.6.3" },
     { name = "pefile", specifier = ">=2024.8.26" },
 ]
 
