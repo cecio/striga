@@ -24,7 +24,7 @@ def popfq(sem: Semantics):
     value = sem.pop(sem.i64)
     value = sem.resize_int(value, sem.i64)
     for name, bit in FLAGS.items():
-        flag = sem.ir.trunc(sem.ir.lshr(value, sem.const64(bit)), sem.types.i1)
+        flag = sem.ir.trunc(sem.ir.lshr(value, sem.const64(bit)), sem.i1)
         sem.flag_write(name, flag)
 
 
@@ -98,7 +98,7 @@ def movq(sem: Semantics):
             low_qword = sem.ir.trunc(src, sem.i64)
         else:
             low_qword = sem.resize_int(src, sem.i64)
-        sem.op_write(0, sem.ir.zext(low_qword, sem.types.i128))
+        sem.op_write(0, sem.ir.zext(low_qword, sem.i128))
         return
 
     dst_ty = sem.types.int_n(sem.insn.operands[0].size * 8)
@@ -109,20 +109,20 @@ def movq(sem: Semantics):
 def movlhps(sem: Semantics):
     dst = sem.op_read(0)
     src = sem.op_read(1)
-    low_mask = sem.ir.zext(sem.const64(-1), sem.types.i128)
+    low_mask = sem.ir.zext(sem.const64(-1), sem.i128)
     low = sem.ir.and_(dst, low_mask)
-    high = sem.ir.shl(sem.ir.and_(src, low_mask), sem.types.i128.constant(64))
+    high = sem.ir.shl(sem.ir.and_(src, low_mask), sem.i128.constant(64))
     sem.op_write(0, sem.ir.or_(low, high))
 
 
 @semantic
 def cbw(sem: Semantics):
-    sem.reg_write("ax", sem.ir.sext(sem.reg_read("al"), sem.types.i16))
+    sem.reg_write("ax", sem.ir.sext(sem.reg_read("al"), sem.i16))
 
 
 @semantic
 def cwde(sem: Semantics):
-    sem.reg_write("eax", sem.ir.sext(sem.reg_read("ax"), sem.types.i32))
+    sem.reg_write("eax", sem.ir.sext(sem.reg_read("ax"), sem.i32))
 
 
 @semantic
@@ -133,13 +133,13 @@ def cdqe(sem: Semantics):
 @semantic
 def cwd(sem: Semantics):
     ax = sem.reg_read("ax")
-    sem.reg_write("dx", sem.ir.ashr(ax, sem.types.i16.constant(15)))
+    sem.reg_write("dx", sem.ir.ashr(ax, sem.i16.constant(15)))
 
 
 @semantic
 def cdq(sem: Semantics):
     eax = sem.reg_read("eax")
-    sem.reg_write("edx", sem.ir.ashr(eax, sem.types.i32.constant(31)))
+    sem.reg_write("edx", sem.ir.ashr(eax, sem.i32.constant(31)))
 
 
 @semantic

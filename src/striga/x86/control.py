@@ -141,7 +141,7 @@ def cmovs(sem: Semantics):
 
 
 def setcc(sem: Semantics, cc: str):
-    sem.op_write(0, sem.ir.zext(cc_cond(sem, cc), sem.types.i8))
+    sem.op_write(0, sem.ir.zext(cc_cond(sem, cc), sem.i8))
 
 
 @semantic

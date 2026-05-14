@@ -97,7 +97,12 @@ class Semantics:
         self.context = module.context
         types = self.context.types
         self.types = self.context.types
+        self.i1 = types.i1
+        self.i8 = types.i8
+        self.i16 = types.i16
+        self.i32 = types.i32
         self.i64 = types.i64
+        self.i128 = types.i128
 
         # Register state
         self.subregs: dict[str, tuple[str, int, int]] = {}
@@ -127,8 +132,8 @@ class Semantics:
         self.state_ty = types.struct("State", self.reg_types.values())
         self.lifted_ty = types.function(types.void, [types.ptr, types.ptr])
 
-        helper_ty = types.function(types.void, [types.i64])
-        undef_flag_ty = types.function(types.i1, [types.i64])
+        helper_ty = types.function(types.void, [self.i64])
+        undef_flag_ty = types.function(self.i1, [self.i64])
         self.jmp_handler = self.module.add_function("__striga_jmp", helper_ty)
         self.call_handler = self.module.add_function("__striga_call", helper_ty)
         self.ret_handler = self.module.add_function("__striga_ret", helper_ty)
@@ -317,14 +322,14 @@ class Semantics:
 
     def mem_read(self, addr: Value, ty: Type) -> Value:
         memory = self.function.get_param(0)
-        ptr = self.ir.gep(self.types.i8, memory, [addr])
+        ptr = self.ir.gep(self.i8, memory, [addr])
         load = self.ir.load(ty, ptr)
         load.inst_alignment = 1
         return load
 
     def mem_write(self, addr: Value, value: Value):
         memory = self.function.get_param(0)
-        ptr = self.ir.gep(self.types.i8, memory, [addr])
+        ptr = self.ir.gep(self.i8, memory, [addr])
         store = self.ir.store(value, ptr)
         store.inst_alignment = 1
 
@@ -394,10 +399,10 @@ class Semantics:
 
     def _bool_to_flag(self, value: Value) -> Value:
         """Convert an LLVM i1 flag predicate to the i8 state representation."""
-        if value.type == self.types.i8:
+        if value.type == self.i8:
             return value
-        assert value.type == self.types.i1
-        return self.ir.zext(value, self.types.i8)
+        assert value.type == self.i1
+        return self.ir.zext(value, self.i8)
 
     def flag_read(self, name: str) -> Value:
         """Read an i8 flag from state as an LLVM i1 predicate."""
@@ -408,7 +413,7 @@ class Semantics:
 
     def flag_write_if(self, cond: Value, name: str, value: Value):
         """Update a flag only when ``cond`` is true; otherwise preserve it."""
-        assert cond.type == self.types.i1
+        assert cond.type == self.i1
         old_value = self.reg_read(name)
         new_value = self._bool_to_flag(value)
         self.reg_write(name, self.ir.select(cond, new_value, old_value))
@@ -452,11 +457,11 @@ class Semantics:
 
     def result_sign_bit(self, result: Value) -> Value:
         sign_shift = result.type.constant(result.type.int_width - 1)
-        return self.ir.trunc(self.ir.lshr(result, sign_shift), self.types.i1)
+        return self.ir.trunc(self.ir.lshr(result, sign_shift), self.i1)
 
     def result_parity_even(self, result: Value) -> Value:
         """Return PF: even parity in the low byte of ``result``."""
-        low = self.resize_int(result, self.types.i8)
+        low = self.resize_int(result, self.i8)
         x = self.ir.xor(low, self.ir.lshr(low, self.const_n(4, 8)))
         x = self.ir.xor(x, self.ir.lshr(x, self.const_n(2, 8)))
         x = self.ir.xor(x, self.ir.lshr(x, self.const_n(1, 8)))

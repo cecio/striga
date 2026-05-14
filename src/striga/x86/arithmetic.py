@@ -222,21 +222,21 @@ def imul(sem: Semantics):
             case 16:
                 lhs = sem.reg_read("ax")
                 product, overflow = signed_wide_mul(sem, lhs, src)
-                sem.reg_write("ax", sem.ir.trunc(product, sem.types.i16))
+                sem.reg_write("ax", sem.ir.trunc(product, sem.i16))
                 sem.reg_write(
                     "dx",
                     sem.ir.trunc(
-                        sem.ir.lshr(product, sem.const_n(16, 32)), sem.types.i16
+                        sem.ir.lshr(product, sem.const_n(16, 32)), sem.i16
                     ),
                 )
             case 32:
                 lhs = sem.reg_read("eax")
                 product, overflow = signed_wide_mul(sem, lhs, src)
-                sem.reg_write("eax", sem.ir.trunc(product, sem.types.i32))
+                sem.reg_write("eax", sem.ir.trunc(product, sem.i32))
                 sem.reg_write(
                     "edx",
                     sem.ir.trunc(
-                        sem.ir.lshr(product, sem.const_n(32, 64)), sem.types.i32
+                        sem.ir.lshr(product, sem.const_n(32, 64)), sem.i32
                     ),
                 )
             case 64:
@@ -280,18 +280,18 @@ def mul(sem: Semantics):
         case 16:
             lhs = sem.reg_read("ax")
             product, overflow = unsigned_wide_mul(sem, lhs, src)
-            sem.reg_write("ax", sem.ir.trunc(product, sem.types.i16))
+            sem.reg_write("ax", sem.ir.trunc(product, sem.i16))
             sem.reg_write(
                 "dx",
-                sem.ir.trunc(sem.ir.lshr(product, sem.const_n(16, 32)), sem.types.i16),
+                sem.ir.trunc(sem.ir.lshr(product, sem.const_n(16, 32)), sem.i16),
             )
         case 32:
             lhs = sem.reg_read("eax")
             product, overflow = unsigned_wide_mul(sem, lhs, src)
-            sem.reg_write("eax", sem.ir.trunc(product, sem.types.i32))
+            sem.reg_write("eax", sem.ir.trunc(product, sem.i32))
             sem.reg_write(
                 "edx",
-                sem.ir.trunc(sem.ir.lshr(product, sem.const_n(32, 64)), sem.types.i32),
+                sem.ir.trunc(sem.ir.lshr(product, sem.const_n(32, 64)), sem.i32),
             )
         case 64:
             lhs = sem.reg_read("rax")
@@ -328,20 +328,20 @@ def div(sem: Semantics):
             quotient, remainder = divmod_wide(
                 sem, sem.reg_read("ah"), sem.reg_read("al"), src
             )
-            sem.reg_write("al", sem.ir.trunc(quotient, sem.types.i8))
-            sem.reg_write("ah", sem.ir.trunc(remainder, sem.types.i8))
+            sem.reg_write("al", sem.ir.trunc(quotient, sem.i8))
+            sem.reg_write("ah", sem.ir.trunc(remainder, sem.i8))
         case 16:
             quotient, remainder = divmod_wide(
                 sem, sem.reg_read("dx"), sem.reg_read("ax"), src
             )
-            sem.reg_write("ax", sem.ir.trunc(quotient, sem.types.i16))
-            sem.reg_write("dx", sem.ir.trunc(remainder, sem.types.i16))
+            sem.reg_write("ax", sem.ir.trunc(quotient, sem.i16))
+            sem.reg_write("dx", sem.ir.trunc(remainder, sem.i16))
         case 32:
             quotient, remainder = divmod_wide(
                 sem, sem.reg_read("edx"), sem.reg_read("eax"), src
             )
-            sem.reg_write("eax", sem.ir.trunc(quotient, sem.types.i32))
-            sem.reg_write("edx", sem.ir.trunc(remainder, sem.types.i32))
+            sem.reg_write("eax", sem.ir.trunc(quotient, sem.i32))
+            sem.reg_write("edx", sem.ir.trunc(remainder, sem.i32))
         case 64:
             quotient, remainder = divmod_wide(
                 sem, sem.reg_read("rdx"), sem.reg_read("rax"), src
@@ -361,20 +361,20 @@ def idiv(sem: Semantics):
             quotient, remainder = divmod_wide(
                 sem, sem.reg_read("ah"), sem.reg_read("al"), src, signed=True
             )
-            sem.reg_write("al", sem.ir.trunc(quotient, sem.types.i8))
-            sem.reg_write("ah", sem.ir.trunc(remainder, sem.types.i8))
+            sem.reg_write("al", sem.ir.trunc(quotient, sem.i8))
+            sem.reg_write("ah", sem.ir.trunc(remainder, sem.i8))
         case 16:
             quotient, remainder = divmod_wide(
                 sem, sem.reg_read("dx"), sem.reg_read("ax"), src, signed=True
             )
-            sem.reg_write("ax", sem.ir.trunc(quotient, sem.types.i16))
-            sem.reg_write("dx", sem.ir.trunc(remainder, sem.types.i16))
+            sem.reg_write("ax", sem.ir.trunc(quotient, sem.i16))
+            sem.reg_write("dx", sem.ir.trunc(remainder, sem.i16))
         case 32:
             quotient, remainder = divmod_wide(
                 sem, sem.reg_read("edx"), sem.reg_read("eax"), src, signed=True
             )
-            sem.reg_write("eax", sem.ir.trunc(quotient, sem.types.i32))
-            sem.reg_write("edx", sem.ir.trunc(remainder, sem.types.i32))
+            sem.reg_write("eax", sem.ir.trunc(quotient, sem.i32))
+            sem.reg_write("edx", sem.ir.trunc(remainder, sem.i32))
         case 64:
             quotient, remainder = divmod_wide(
                 sem, sem.reg_read("rdx"), sem.reg_read("rax"), src, signed=True

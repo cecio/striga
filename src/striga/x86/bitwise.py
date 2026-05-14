@@ -82,7 +82,7 @@ def write_shl_flags(sem: Semantics, lhs: Value, count: Value, result: Value):
     cf_defined = sem.ir.and_(count_nonzero, count_in_range)
     safe_count = sem.ir.select(cf_defined, count, count.type.constant(1))
     cf_shift = sem.ir.sub(count.type.constant(width), safe_count)
-    cf = sem.ir.trunc(sem.ir.lshr(lhs, cf_shift), sem.types.i1)
+    cf = sem.ir.trunc(sem.ir.lshr(lhs, cf_shift), sem.i1)
     if width < 32:
         cf = sem.ir.select(count_in_range, cf, sem.flag_undef("cf"))
     sem.flag_write_if(count_nonzero, "cf", cf)
@@ -131,7 +131,7 @@ def write_shr_flags(sem: Semantics, lhs: Value, count: Value, result: Value):
     cf_defined = sem.ir.and_(count_nonzero, count_in_range)
     safe_count = sem.ir.select(cf_defined, count, count.type.constant(1))
     cf_shift = sem.ir.sub(safe_count, count.type.constant(1))
-    cf = sem.ir.trunc(sem.ir.lshr(lhs, cf_shift), sem.types.i1)
+    cf = sem.ir.trunc(sem.ir.lshr(lhs, cf_shift), sem.i1)
     if width < 32:
         cf = sem.ir.select(count_in_range, cf, sem.flag_undef("cf"))
     sem.flag_write_if(count_nonzero, "cf", cf)
@@ -182,7 +182,7 @@ def rol(sem: Semantics):
     sem.op_write(0, result)
 
     count_nonzero = sem.ir.icmp(IntPredicate.NE, count, count.type.constant(0))
-    cf = sem.ir.trunc(result, sem.types.i1)
+    cf = sem.ir.trunc(result, sem.i1)
     sem.flag_write_if(count_nonzero, "cf", cf)
 
     count_one = sem.ir.icmp(IntPredicate.EQ, count, count.type.constant(1))
@@ -205,7 +205,7 @@ def write_sar_flags(sem: Semantics, lhs: Value, count: Value, result: Value):
     cf_defined = sem.ir.and_(count_nonzero, count_in_range)
     safe_count = sem.ir.select(cf_defined, count, count.type.constant(1))
     cf_shift = sem.ir.sub(safe_count, count.type.constant(1))
-    shifted_out = sem.ir.trunc(sem.ir.lshr(lhs, cf_shift), sem.types.i1)
+    shifted_out = sem.ir.trunc(sem.ir.lshr(lhs, cf_shift), sem.i1)
     cf = sem.ir.select(count_in_range, shifted_out, sem.result_sign_bit(lhs))
     sem.flag_write_if(count_nonzero, "cf", cf)
 
