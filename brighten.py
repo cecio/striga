@@ -4,7 +4,7 @@ from bfs import lift_bfs
 from container import RawContainer
 
 CODE = RawContainer(
-    bytes.fromhex("48 C1 EF 03 48 8D 04 7F 48 01 F0 48 05 39 05 00 00 C3"),
+    bytes.fromhex("48 01 F7 48 89 F8 C3"),
     0x1000,
 )
 
@@ -62,33 +62,46 @@ def define_ret_stub(module: Module):
 
 
 with global_context().create_module("blog") as module:
-    sem = lift_bfs(module, CODE, 0x1000, verbose=False)
+    start = 0x1000
+    sem = lift_bfs(module, CODE, start, verbose=False)
 
+    # Optimize lifted function for readablity (not strictly necessary)
+    sem.function.optimize("instcombine,simplifycfg,early-cse<memssa>,dse,adce")
+    print(sem.function)
+
+    # Convenience aliases
     types = module.context.types
     i8 = types.i8
     i64 = types.i64
 
+    # Global RAM array
     ram = module.add_global(types.array(i8, 0), "RAM")
 
-    lift2_ty = types.function(i64, [i64, i64])
-    lift2 = module.add_function("lift2", lift2_ty)
-    entry = lift2.append_basic_block("entry")
-    with entry.create_builder() as ir:
+    brightened_ty = types.function(i64, [i64, i64])
+    brightened = module.add_function(f"brightened_{hex(start)}", brightened_ty)
+    with brightened.create_builder() as ir:
         state = ir.alloca(sem.state_ty, "state")
 
         def reg_ptr(name: str) -> Value:
             return ir.struct_gep(sem.state_ty, state, sem.reg_indices[name], name)
 
-        ir.store(lift2.get_param(0), reg_ptr("rdi"))
-        ir.store(lift2.get_param(1), reg_ptr("rsi"))
+        # Assign arguments to register state
+        ir.store(brightened.get_param(0), reg_ptr("rdi"))
+        ir.store(brightened.get_param(1), reg_ptr("rsi"))
 
+        # Set up function stack
         stack = ir.alloca(i8, i64.constant(4096), "stack")
         stack_ptr = ir.gep(i8, stack, [i64.constant(4096 - 8)])
-        retaddr_store = ir.store(i64.constant(0), stack_ptr)
-        retaddr_store.inst_alignment = 1
         ir.store(ir.ptrtoint(stack_ptr, i64), reg_ptr("rsp"))
 
+        # Set up return address
+        retaddr_store = ir.store(i64.constant(0xDEADBEEF), stack_ptr)
+        retaddr_store.inst_alignment = 1
+
+        # Call lifted function
         ir.call(sem.function, [ram, state])
+
+        # Load return value from rax and return it
         ir.ret(ir.load(i64, reg_ptr("rax")))
 
     module.verify_or_raise()
