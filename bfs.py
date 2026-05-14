@@ -4,7 +4,9 @@ from striga import Semantics, Successor
 from container import Container
 
 
-def lift_bfs(module: Module, container: Container, start: int, *, verbose=True) -> Semantics:
+def lift_bfs(
+    module: Module, container: Container, start: int, *, verbose=True
+) -> Semantics:
     sem = Semantics(module, verbose=verbose)
     sem.begin(start)
 

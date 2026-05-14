@@ -1,4 +1,3 @@
-from pefile import PE
 from llvm import Module, create_context
 from lift import lift_pe
 

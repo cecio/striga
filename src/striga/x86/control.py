@@ -11,11 +11,20 @@ def bool_eq(sem: Semantics, lhs: Value, rhs: Value) -> Value:
 
 
 def cc_cond(sem: Semantics, cc: str) -> Value:
-    cf = lambda: sem.flag_read("cf")
-    zf = lambda: sem.flag_read("zf")
-    sf = lambda: sem.flag_read("sf")
-    of = lambda: sem.flag_read("of")
-    pf = lambda: sem.flag_read("pf")
+    def cf():
+        return sem.flag_read("cf")
+
+    def zf():
+        return sem.flag_read("zf")
+
+    def sf():
+        return sem.flag_read("sf")
+
+    def of():
+        return sem.flag_read("of")
+
+    def pf():
+        return sem.flag_read("pf")
 
     match cc:
         case "a" | "nbe":

@@ -65,13 +65,10 @@ with global_context().create_module("blog") as module:
     sem = lift_bfs(module, CODE, 0x1000, verbose=False)
 
     types = module.context.types
+    i8 = types.i8
     i64 = types.i64
 
-    ram = module.add_global(types.array(types.i8, 0), "RAM")
-
-    # Make lifted memory symbolic as @RAM. The wrapper still has to pass a value
-    # for the ABI, but the parameter is unused after this replacement.
-    sem.function.get_param(0).replace_all_uses_with(ram)
+    ram = module.add_global(types.array(i8, 0), "RAM")
 
     lift2_ty = types.function(i64, [i64, i64])
     lift2 = module.add_function("lift2", lift2_ty)
@@ -85,13 +82,13 @@ with global_context().create_module("blog") as module:
         ir.store(lift2.get_param(0), reg_ptr("rdi"))
         ir.store(lift2.get_param(1), reg_ptr("rsi"))
 
-        stack = ir.alloca(types.i8, i64.constant(4096), "stack")
-        stack_ptr = ir.gep(types.i8, stack, [i64.constant(4096 - 8)])
+        stack = ir.alloca(i8, i64.constant(4096), "stack")
+        stack_ptr = ir.gep(i8, stack, [i64.constant(4096 - 8)])
         retaddr_store = ir.store(i64.constant(0), stack_ptr)
         retaddr_store.inst_alignment = 1
         ir.store(ir.ptrtoint(stack_ptr, i64), reg_ptr("rsp"))
 
-        ir.call(sem.function, [types.ptr.undef(), state])
+        ir.call(sem.function, [ram, state])
         ir.ret(ir.load(i64, reg_ptr("rax")))
 
     module.verify_or_raise()

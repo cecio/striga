@@ -225,9 +225,7 @@ def imul(sem: Semantics):
                 sem.reg_write("ax", sem.ir.trunc(product, sem.i16))
                 sem.reg_write(
                     "dx",
-                    sem.ir.trunc(
-                        sem.ir.lshr(product, sem.const_n(16, 32)), sem.i16
-                    ),
+                    sem.ir.trunc(sem.ir.lshr(product, sem.const_n(16, 32)), sem.i16),
                 )
             case 32:
                 lhs = sem.reg_read("eax")
@@ -235,9 +233,7 @@ def imul(sem: Semantics):
                 sem.reg_write("eax", sem.ir.trunc(product, sem.i32))
                 sem.reg_write(
                     "edx",
-                    sem.ir.trunc(
-                        sem.ir.lshr(product, sem.const_n(32, 64)), sem.i32
-                    ),
+                    sem.ir.trunc(sem.ir.lshr(product, sem.const_n(32, 64)), sem.i32),
                 )
             case 64:
                 lhs = sem.reg_read("rax")

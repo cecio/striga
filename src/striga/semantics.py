@@ -138,6 +138,7 @@ class Semantics:
         self.call_handler = self.module.add_function("__striga_call", helper_ty)
         self.ret_handler = self.module.add_function("__striga_ret", helper_ty)
         self.syscall_handler = self.module.add_function("__striga_syscall", helper_ty)
+
         def add_undef_flag_helper(name: str) -> Function:
             helper = self.module.add_function(f"__striga_undef_{name}", undef_flag_ty)
             # Undefined-flag helpers model arbitrary values, not side effects.
