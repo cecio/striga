@@ -99,7 +99,7 @@ with global_context().create_module("blog") as module:
         retaddr_store.inst_alignment = 1
 
         # Call lifted function
-        ir.call(sem.function, [ram, state])
+        ir.call(sem.function, [state, ram])
 
         # Load return value from rax and return it
         ir.ret(ir.load(i64, reg_ptr("rax")))

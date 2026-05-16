@@ -139,7 +139,7 @@ class Semantics:
         self.ret_handler = self.module.add_function("__striga_ret", helper_ty)
         self.syscall_handler = self.module.add_function("__striga_syscall", helper_ty)
 
-        def add_undef_flag_helper(name: str) -> Function:
+        def add_undef_flag(name: str) -> Function:
             helper = self.module.add_function(f"__striga_undef_{name}", undef_flag_ty)
             # Undefined-flag helpers model arbitrary values, not side effects.
             # Match Remill's symbolic/undefined helper annotations so calls can
@@ -149,7 +149,7 @@ class Semantics:
             helper.attributes.add("willreturn")
             return helper
 
-        self.undef_flags = {name: add_undef_flag_helper(name) for name in FLAGS}
+        self.undef_flags = {name: add_undef_flag(name) for name in FLAGS}
 
         # Set per function lifted
         self.insn_blocks: dict[int, BasicBlock] = {}
@@ -182,7 +182,7 @@ class Semantics:
         if fn is None:
             fn = self.module.add_function(name, self.lifted_ty)
             fn.linkage = Linkage.Internal
-            memory, state = fn.params
+            state, memory = fn.params
             memory.name = "memory"
             state.name = "state"
             self.function = fn
@@ -280,7 +280,7 @@ class Semantics:
             return reg_ptr
 
         entry = self.function.entry_block
-        state = self.function.get_param(1)
+        state = self.function.get_param(0)
         with entry.create_builder() as ir:
             ir.position_before(entry.terminator)
             reg_ptr = ir.struct_gep(self.state_ty, state, self.reg_indices[name], name)
@@ -322,14 +322,14 @@ class Semantics:
         self.ir.store(self.ir.or_(cleared, widened), full_ptr)
 
     def mem_read(self, addr: Value, ty: Type) -> Value:
-        memory = self.function.get_param(0)
+        memory = self.function.get_param(1)
         ptr = self.ir.gep(self.i8, memory, [addr])
         load = self.ir.load(ty, ptr)
         load.inst_alignment = 1
         return load
 
     def mem_write(self, addr: Value, value: Value):
-        memory = self.function.get_param(0)
+        memory = self.function.get_param(1)
         ptr = self.ir.gep(self.i8, memory, [addr])
         store = self.ir.store(value, ptr)
         store.inst_alignment = 1

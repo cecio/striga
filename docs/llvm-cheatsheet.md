@@ -4,15 +4,15 @@ This page explains the LLVM IR vocabulary needed to read Striga output and the P
 
 Striga lifts x86-64 instructions into LLVM IR with two explicit pieces of machine state:
 
-- `%memory`: a byte-addressed emulated memory region.
 - `%state`: a `%State` struct containing registers, XMM registers, `gsbase`, `rip`, and tracked flags.
+- `%memory`: a byte-addressed emulated memory region.
 
 ## Striga IR at a glance
 
 A lifted function usually looks like this:
 
 ```llvm
-define internal void @lifted_0x140016000(ptr %memory, ptr %state) {
+define internal void @lifted_0x140016000(ptr %state, ptr %memory) {
 initialize:
   %rip = getelementptr inbounds nuw %State, ptr %state, i32 0, i32 16
   %r15 = getelementptr inbounds nuw %State, ptr %state, i32 0, i32 15
@@ -39,8 +39,8 @@ How to read it:
 | IR | Meaning in Striga |
 |---|---|
 | `define internal void @lifted_0x140016000(...)` | Lifted function for the start address `0x140016000`. |
-| `ptr %memory` | Pointer to emulated memory. |
 | `ptr %state` | Pointer to the machine-state struct. |
+| `ptr %memory` | Pointer to emulated memory. |
 | `initialize:` | Entry block. Striga creates pointers to state fields here. |
 | `%rip = getelementptr ...` | Compute the address of the `rip` field inside `%State`. |
 | `br label %insn_0x140016000` | Jump from the entry block to the first lifted instruction block. |
@@ -64,7 +64,7 @@ How to read it:
 | Value | Anything usable as an operand. | Constants, parameters, functions, instruction results. |
 | Constant | Value known at IR construction time. | `i64 5368799232`, `sem.const64(address)`. |
 | Function | Callable IR unit. | `@lifted_0x...`, `@__striga_jmp`. |
-| Parameter | Function input value. | `%memory`, `%state`. |
+| Parameter | Function input value. | `%state`, `%memory`. |
 | Basic block | Label plus straight-line instructions ending in a terminator. | `initialize`, `insn_0x140016000`. |
 | Instruction | Operation inside a basic block. | `load`, `store`, `sub`, `br`. |
 | Terminator | Final instruction of a basic block. | `br`, `cond_br`, `ret void`, `unreachable`. |
