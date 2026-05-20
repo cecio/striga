@@ -373,7 +373,10 @@ class Semantics:
             name = self.reg_name(op.reg)  # pyright: ignore[reportAssignmentType]
             return self.reg_read(name)
         if op.type == CS_OP_IMM:
-            # TODO: is the sign handled correctly?
+            # Capstone exposes x86 immediates at the architecturally consumed
+            # width. That includes sign-extending compressed imm8/imm32 forms
+            # when the instruction semantics require it, while leaving unsigned
+            # full-width immediates as their original bit patterns.
             return self.const_n(op.imm, op.size * 8)
         if op.type == CS_OP_MEM:
             addr = self.op_mem(op)
@@ -389,8 +392,12 @@ class Semantics:
             raise ValueError("Cannot write to CS_OP_IMM")
         elif op.type == CS_OP_MEM:
             addr = self.op_mem(op)
-            assert value.type.int_width == op.size * 8
-            # TODO: narrow the write?
+            # Memory operands write exactly op.size bytes; discard high bits if
+            # a semantic helper produced a wider temporary value.
+            store_bits = op.size * 8
+            if value.type.int_width > store_bits:
+                value = self.ir.trunc(value, self.types.int_n(store_bits))
+            assert value.type.int_width == store_bits
             self.mem_write(addr, value)
 
     def _bool_to_flag(self, value: Value) -> Value:
