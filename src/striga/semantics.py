@@ -253,7 +253,7 @@ class Semantics:
 
         # Skip lifting if the block is already populated
         block = self.get_or_create_block(address)
-        assert block.first_instruction, "unreachable"
+        assert block.first_instruction
         if block.first_instruction.opcode == Opcode.Ret:
             block.first_instruction.erase_from_parent()
         else:
@@ -406,7 +406,7 @@ class Semantics:
         if op.type == CS_OP_MEM:
             addr = self.op_mem(op)
             return self.mem_read(addr, self.types.int_n(op.size * 8))
-        assert False, "unreachable"
+        assert False
 
     def op_write(self, index: int, value: Value):
         op: X86Op = self.insn.operands[index]
