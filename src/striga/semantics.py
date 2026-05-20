@@ -22,7 +22,6 @@ from llvm import (
     Builder,
     Module,
     Function,
-    Linkage,
     Opcode,
     IntPredicate,
     Type,
@@ -115,7 +114,6 @@ class Semantics:
 
         self.reg_sizes = {
             **{gpr.r64: 64 for gpr in GPRS},
-            "rip": 64,
             "gsbase": 64,
             **{name: 128 for name in XMM_REGS},
             "cf": 8,
@@ -181,7 +179,6 @@ class Semantics:
         fn = self.module.get_function(name)
         if fn is None:
             fn = self.module.add_function(name, self.lifted_ty)
-            fn.linkage = Linkage.Internal
             state, memory = fn.params
             memory.name = "memory"
             state.name = "state"
@@ -249,9 +246,7 @@ class Semantics:
             # State used by semantic handlers
             self.ir = ir
             self.insn = insn
-            # Intentional: RIP records the current instruction, not the next PC.
-            # Each lifted instruction owns writing its own address.
-            self.reg_write("rip", self.const64(address))
+
             handler = _semantics.get(insn.mnemonic)
             if handler is None and insn.mnemonic.startswith("lock "):
                 # LOCK preserves the single-threaded architectural result; the
@@ -274,7 +269,7 @@ class Semantics:
     def reg_name(self, reg_id: int) -> str:
         return self.insn.reg_name(reg_id)  # pyright: ignore[reportReturnType]
 
-    def _reg_ptr(self, name: str) -> Value:
+    def reg_ptr(self, name: str) -> Value:
         reg_ptr = self.reg_ptrs.get(name)
         if reg_ptr is not None:
             return reg_ptr
@@ -289,10 +284,10 @@ class Semantics:
 
     def reg_read(self, name: str) -> Value:
         if name in self.reg_types:
-            return self.ir.load(self.reg_types[name], self._reg_ptr(name))
+            return self.ir.load(self.reg_types[name], self.reg_ptr(name))
 
         full_name, size, bit_offset = self.subregs[name]
-        full = self.ir.load(self.reg_types[full_name], self._reg_ptr(full_name))
+        full = self.ir.load(self.reg_types[full_name], self.reg_ptr(full_name))
         if bit_offset:
             full = self.ir.lshr(full, self.const64(bit_offset))
         return self.ir.trunc(full, self.types.int_n(size))
@@ -300,12 +295,12 @@ class Semantics:
     def reg_write(self, name: str, value: Value):
         if name in self.reg_types:
             assert value.type.int_width == self.reg_sizes[name]
-            self.ir.store(value, self._reg_ptr(name))
+            self.ir.store(value, self.reg_ptr(name))
             return
 
         full_name, size, bit_offset = self.subregs[name]
         assert value.type.int_width == size
-        full_ptr = self._reg_ptr(full_name)
+        full_ptr = self.reg_ptr(full_name)
 
         # x86-64 writes to r32 zero-extend into the enclosing r64 register.
         if size == 32:
