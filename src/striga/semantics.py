@@ -26,6 +26,7 @@ from llvm import (
     IntPredicate,
     Type,
     BasicBlock,
+    Metadata,
 )
 
 
@@ -126,6 +127,20 @@ class Semantics:
         self.reg_types = {
             name: types.int_n(size) for name, size in self.reg_sizes.items()
         }
+
+        def md_node(*args):
+            return self.context.md_node(args)
+
+        def md_string(s):
+            return self.context.md_string(s)
+
+        tbaa_root = md_node(md_string("state_root"))
+        self.tbaa_tags: dict[str, Metadata] = {}
+        for name in self.reg_types:
+            tbaa_type = md_node(md_string(name), tbaa_root)
+            self.tbaa_tags[name] = md_node(
+                tbaa_type, tbaa_type, self.i64.constant(0).as_metadata()
+            )
         self.reg_indices = {name: i for i, name in enumerate(self.reg_types)}
         self.state_ty = types.struct("State", self.reg_types.values())
         self.lifted_ty = types.function(types.void, [types.ptr, types.ptr])
@@ -179,6 +194,8 @@ class Semantics:
         fn = self.module.get_function(name)
         if fn is None:
             fn = self.module.add_function(name, self.lifted_ty)
+            fn.param_attributes(0).add("noalias")
+            fn.param_attributes(1).add("noalias")
             state, memory = fn.params
             memory.name = "memory"
             state.name = "state"
@@ -284,18 +301,23 @@ class Semantics:
 
     def reg_read(self, name: str) -> Value:
         if name in self.reg_types:
-            return self.ir.load(self.reg_types[name], self.reg_ptr(name))
+            load = self.ir.load(self.reg_types[name], self.reg_ptr(name))
+            load.metadata["tbaa"] = self.tbaa_tags[name]
+            return load
 
         full_name, size, bit_offset = self.subregs[name]
-        full = self.ir.load(self.reg_types[full_name], self.reg_ptr(full_name))
+        load = self.ir.load(self.reg_types[full_name], self.reg_ptr(full_name))
+        load.metadata["tbaa"] = self.tbaa_tags[full_name]
+
         if bit_offset:
-            full = self.ir.lshr(full, self.const64(bit_offset))
-        return self.ir.trunc(full, self.types.int_n(size))
+            load = self.ir.lshr(load, self.const64(bit_offset))
+        return self.ir.trunc(load, self.types.int_n(size))
 
     def reg_write(self, name: str, value: Value):
         if name in self.reg_types:
             assert value.type.int_width == self.reg_sizes[name]
-            self.ir.store(value, self.reg_ptr(name))
+            store = self.ir.store(value, self.reg_ptr(name))
+            store.metadata["tbaa"] = self.tbaa_tags[name]
             return
 
         full_name, size, bit_offset = self.subregs[name]
@@ -304,17 +326,20 @@ class Semantics:
 
         # x86-64 writes to r32 zero-extend into the enclosing r64 register.
         if size == 32:
-            self.ir.store(self.ir.zext(value, self.i64), full_ptr)
+            store = self.ir.store(self.ir.zext(value, self.i64), full_ptr)
+            store.metadata["tbaa"] = self.tbaa_tags[full_name]
             return
 
         # Narrow writes update only the addressed bits of the full register.
         mask = ((1 << size) - 1) << bit_offset
-        full = self.ir.load(self.i64, full_ptr)
-        cleared = self.ir.and_(full, self.const64(~mask))
+        load = self.ir.load(self.i64, full_ptr)
+        load.metadata["tbaa"] = self.tbaa_tags[full_name]
+        cleared = self.ir.and_(load, self.const64(~mask))
         widened = self.ir.zext(value, self.i64)
         if bit_offset:
             widened = self.ir.shl(widened, self.const64(bit_offset))
-        self.ir.store(self.ir.or_(cleared, widened), full_ptr)
+        store = self.ir.store(self.ir.or_(cleared, widened), full_ptr)
+        store.metadata["tbaa"] = self.tbaa_tags[full_name]
 
     def mem_read(self, addr: Value, ty: Type) -> Value:
         memory = self.function.get_param(1)
