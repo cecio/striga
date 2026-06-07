@@ -149,6 +149,17 @@ def cqo(sem: Semantics):
 
 
 @semantic
+def bswap(sem: Semantics):
+    value = sem.op_read(0)
+    width = value.type.int_width
+    assert width in (32, 64)
+
+    intrinsic = sem.module.get_intrinsic_declaration(
+        lookup_intrinsic_id(f"llvm.bswap.i{width}"),
+        [value.type],
+    )
+    sem.op_write(0, sem.ir.call(intrinsic, [value]))
+@semantic
 def xchg(sem: Semantics):
     src = sem.op_read(1)
     dst = sem.op_read(0)
