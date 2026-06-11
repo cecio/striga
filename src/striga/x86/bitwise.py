@@ -191,6 +191,110 @@ def rol(sem: Semantics):
     sem.flag_write_if(count_nonzero, "of", of)
 
 
+@semantic
+def ror(sem: Semantics):
+    dst = sem.op_read(0)
+    width = dst.type.int_width
+    count = masked_shift_count(sem, sem.op_read(1), width)
+    rotate_count = sem.ir.urem(count, count.type.constant(width))
+    rotate_nonzero = sem.ir.icmp(
+        IntPredicate.NE, rotate_count, rotate_count.type.constant(0)
+    )
+    safe_count = sem.ir.select(rotate_nonzero, rotate_count, count.type.constant(1))
+
+    right = sem.ir.lshr(dst, safe_count)
+    left = sem.ir.shl(dst, sem.ir.sub(count.type.constant(width), safe_count))
+    rotated = sem.ir.or_(right, left)
+    result = sem.ir.select(rotate_nonzero, rotated, dst)
+    sem.op_write(0, result)
+
+    count_nonzero = sem.ir.icmp(IntPredicate.NE, count, count.type.constant(0))
+    count_one = sem.ir.icmp(IntPredicate.EQ, count, count.type.constant(1))
+
+    msb = sem.result_sign_bit(result)
+    sem.flag_write_if(count_nonzero, "cf", msb)
+
+    # SDM: for 1-bit ROR, OF is the XOR of the two most-significant result bits.
+    next_msb = sem.ir.trunc(
+        sem.ir.lshr(result, result.type.constant(width - 2)), sem.i1
+    )
+    of_for_one = sem.ir.xor(msb, next_msb)
+    of = sem.ir.select(count_one, of_for_one, sem.flag_undef("of"))
+    sem.flag_write_if(count_nonzero, "of", of)
+
+
+def double_shift_flags(sem: Semantics, dst: Value, result: Value, count: Value, cf: Value):
+    """Common SHLD/SHRD flag updates (PF/AF/ZF/SF and OF for the 1-bit case)."""
+    count_nonzero = sem.ir.icmp(IntPredicate.NE, count, count.type.constant(0))
+    count_one = sem.ir.icmp(IntPredicate.EQ, count, count.type.constant(1))
+
+    sem.flag_write_if(count_nonzero, "cf", cf)
+
+    of_for_one = sem.ir.xor(sem.result_sign_bit(result), sem.result_sign_bit(dst))
+    of = sem.ir.select(count_one, of_for_one, sem.flag_undef("of"))
+    sem.flag_write_if(count_nonzero, "of", of)
+
+    sem.flag_write_if(count_nonzero, "pf", sem.result_parity_even(result))
+    sem.flag_write_undef_if(count_nonzero, "af")
+    sem.flag_write_if(count_nonzero, "zf", sem.result_is_zero(result))
+    sem.flag_write_if(count_nonzero, "sf", sem.result_sign_bit(result))
+
+
+@semantic
+def shld(sem: Semantics):
+    dst = sem.op_read(0)
+    src = sem.op_read(1)
+    width = dst.type.int_width
+    count = masked_shift_count(sem, sem.op_read(2), width)
+    count_nonzero = sem.ir.icmp(IntPredicate.NE, count, count.type.constant(0))
+
+    # Concatenate dst:src in a 2*width-bit value, shift left by count, then take
+    # the high width bits.  This is equivalent to: (dst << count) | (src >> (width - count)).
+    wide_ty = sem.types.int_n(width * 2)
+    combined = sem.ir.or_(
+        sem.ir.shl(sem.ir.zext(dst, wide_ty), wide_ty.constant(width)),
+        sem.ir.zext(src, wide_ty),
+    )
+    wide_count = sem.ir.zext(count, wide_ty)
+    shifted = sem.ir.lshr(sem.ir.shl(combined, wide_count), wide_ty.constant(width))
+    result = sem.ir.select(count_nonzero, sem.ir.trunc(shifted, dst.type), dst)
+    sem.op_write(0, result)
+
+    # CF is the last bit shifted out of dst (bit at position width - count).
+    safe_cf_shift = sem.ir.select(
+        count_nonzero, sem.ir.sub(count.type.constant(width), count), count.type.constant(0)
+    )
+    cf = sem.ir.trunc(sem.ir.lshr(dst, safe_cf_shift), sem.i1)
+    double_shift_flags(sem, dst, result, count, cf)
+
+
+@semantic
+def shrd(sem: Semantics):
+    dst = sem.op_read(0)
+    src = sem.op_read(1)
+    width = dst.type.int_width
+    count = masked_shift_count(sem, sem.op_read(2), width)
+    count_nonzero = sem.ir.icmp(IntPredicate.NE, count, count.type.constant(0))
+
+    # Concatenate src:dst in a 2*width-bit value and shift right by count.
+    wide_ty = sem.types.int_n(width * 2)
+    combined = sem.ir.or_(
+        sem.ir.shl(sem.ir.zext(src, wide_ty), wide_ty.constant(width)),
+        sem.ir.zext(dst, wide_ty),
+    )
+    wide_count = sem.ir.zext(count, wide_ty)
+    shifted = sem.ir.trunc(sem.ir.lshr(combined, wide_count), dst.type)
+    result = sem.ir.select(count_nonzero, shifted, dst)
+    sem.op_write(0, result)
+
+    # CF is the last bit shifted out of dst (bit at position count - 1).
+    safe_count = sem.ir.select(count_nonzero, count, count.type.constant(1))
+    cf = sem.ir.trunc(
+        sem.ir.lshr(dst, sem.ir.sub(safe_count, count.type.constant(1))), sem.i1
+    )
+    double_shift_flags(sem, dst, result, count, cf)
+
+
 def write_sar_flags(sem: Semantics, lhs: Value, count: Value, result: Value):
     width = lhs.type.int_width
     count_nonzero = sem.ir.icmp(IntPredicate.NE, count, count.type.constant(0))
@@ -324,3 +428,73 @@ def bts(sem: Semantics):
         sem.op_write(0, result)
     else:
         sem.mem_write(addr, result)
+
+
+@semantic
+def rcl(sem: Semantics):
+    dst = sem.op_read(0)
+    width = dst.type.int_width
+    count = masked_shift_count(sem, sem.op_read(1), width)
+    eff_count = sem.ir.urem(count, count.type.constant(width + 1))
+    eff_nonzero = sem.ir.icmp(IntPredicate.NE, eff_count, count.type.constant(0))
+    count_nonzero = sem.ir.icmp(IntPredicate.NE, count, count.type.constant(0))
+    count_one = sem.ir.icmp(IntPredicate.EQ, count, count.type.constant(1))
+
+    # Pack CF as the high bit of a (width + 1)-bit value, then rotate left.
+    wide_ty = sem.types.int_n(width + 1)
+    cf_in = sem.flag_read("cf")
+    combined = sem.ir.or_(
+        sem.ir.shl(sem.ir.zext(cf_in, wide_ty), wide_ty.constant(width)),
+        sem.ir.zext(dst, wide_ty),
+    )
+    safe_count = sem.ir.select(eff_nonzero, eff_count, count.type.constant(1))
+    wide_count = sem.ir.zext(safe_count, wide_ty)
+    rotated = sem.ir.or_(
+        sem.ir.shl(combined, wide_count),
+        sem.ir.lshr(combined, sem.ir.sub(wide_ty.constant(width + 1), wide_count)),
+    )
+    result_wide = sem.ir.select(eff_nonzero, rotated, combined)
+    result = sem.ir.trunc(result_wide, dst.type)
+    sem.op_write(0, result)
+
+    new_cf = sem.ir.trunc(sem.ir.lshr(result_wide, wide_ty.constant(width)), sem.i1)
+    sem.flag_write_if(eff_nonzero, "cf", new_cf)
+
+    of_for_one = sem.ir.xor(sem.result_sign_bit(result), new_cf)
+    of = sem.ir.select(count_one, of_for_one, sem.flag_undef("of"))
+    sem.flag_write_if(count_nonzero, "of", of)
+
+
+@semantic
+def rcr(sem: Semantics):
+    dst = sem.op_read(0)
+    width = dst.type.int_width
+    count = masked_shift_count(sem, sem.op_read(1), width)
+    eff_count = sem.ir.urem(count, count.type.constant(width + 1))
+    eff_nonzero = sem.ir.icmp(IntPredicate.NE, eff_count, count.type.constant(0))
+    count_nonzero = sem.ir.icmp(IntPredicate.NE, count, count.type.constant(0))
+    count_one = sem.ir.icmp(IntPredicate.EQ, count, count.type.constant(1))
+
+    wide_ty = sem.types.int_n(width + 1)
+    cf_in = sem.flag_read("cf")
+    combined = sem.ir.or_(
+        sem.ir.shl(sem.ir.zext(cf_in, wide_ty), wide_ty.constant(width)),
+        sem.ir.zext(dst, wide_ty),
+    )
+    safe_count = sem.ir.select(eff_nonzero, eff_count, count.type.constant(1))
+    wide_count = sem.ir.zext(safe_count, wide_ty)
+    rotated = sem.ir.or_(
+        sem.ir.lshr(combined, wide_count),
+        sem.ir.shl(combined, sem.ir.sub(wide_ty.constant(width + 1), wide_count)),
+    )
+    result_wide = sem.ir.select(eff_nonzero, rotated, combined)
+    result = sem.ir.trunc(result_wide, dst.type)
+    sem.op_write(0, result)
+
+    new_cf = sem.ir.trunc(sem.ir.lshr(result_wide, wide_ty.constant(width)), sem.i1)
+    sem.flag_write_if(eff_nonzero, "cf", new_cf)
+
+    # SDM: for 1-bit RCR, OF is computed from the operands before the rotation.
+    of_for_one = sem.ir.xor(sem.result_sign_bit(dst), cf_in)
+    of = sem.ir.select(count_one, of_for_one, sem.flag_undef("of"))
+    sem.flag_write_if(count_nonzero, "of", of)
