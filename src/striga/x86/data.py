@@ -150,11 +150,17 @@ def cqo(sem: Semantics):
 
 @semantic
 def bswap(sem: Semantics):
-    value = sem.op_read(0)
+    op = sem.insn.operands[0]
+
+    if op.size == 2:
+        full, _, _ = sem.subregs[sem.reg_name(op.reg)]
+        value = sem.ir.trunc(sem.reg_read(full), sem.i32)
+    else:
+        value = sem.op_read(0)
 
     intrinsic = sem.module.get_intrinsic_declaration(lookup_intrinsic_id("llvm.bswap"), [value.type])
-
-    sem.op_write(0, sem.ir.call(intrinsic, [value]))
+    result = sem.ir.call(intrinsic, [value])
+    sem.op_write(0, sem.resize_int(result, sem.i16) if op.size == 2 else result)
 
 @semantic
 def xchg(sem: Semantics):
