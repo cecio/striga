@@ -18,3 +18,5 @@ if __name__ == "__main__":
             print(riscvm_run)
             themida = lift_pe(module, "tests/example2-virt.bin", 0x140001000)
             print(themida)
+            x86_ops = lift_pe(module, "tests/x86_ops.exe", 0x140001000)
+            print(x86_ops)

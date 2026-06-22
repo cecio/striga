@@ -89,6 +89,25 @@ def add(sem: Semantics):
 
 
 @semantic
+def adc(sem: Semantics):
+    dst = sem.op_read(0)
+    src = sem.resize_int(sem.op_read(1), dst.type)
+    cf_in = sem.flag_read("cf")
+    carry = sem.ir.zext(cf_in, dst.type)
+    src_plus_carry = sem.ir.add(src, carry)
+    result = sem.ir.add(dst, src_plus_carry)
+    sem.op_write(0, result)
+
+    cf = sem.ir.or_(
+        sem.ir.icmp(IntPredicate.ULT, result, dst),
+        sem.ir.and_(sem.ir.icmp(IntPredicate.EQ, result, dst), cf_in),
+    )
+    sem.flag_write("cf", cf)
+    write_common_arith_flags(sem, dst, src, result)
+    sem.flag_write("of", add_overflow(sem, dst, src, result))
+
+
+@semantic
 def sub(sem: Semantics):
     arith_binop(sem, Opcode.Sub, write_sub_flags)
 
