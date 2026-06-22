@@ -1,5 +1,5 @@
 from capstone import CS_OP_REG
-
+from llvm import lookup_intrinsic_id
 from ..semantics import FLAGS, Semantics, semantic
 
 
@@ -147,6 +147,20 @@ def cqo(sem: Semantics):
     rax = sem.reg_read("rax")
     sem.reg_write("rdx", sem.ir.ashr(rax, sem.const64(63)))
 
+
+@semantic
+def bswap(sem: Semantics):
+    op = sem.insn.operands[0]
+
+    if op.size == 2:
+        full, _, _ = sem.subregs[sem.reg_name(op.reg)]
+        value = sem.ir.trunc(sem.reg_read(full), sem.i32)
+    else:
+        value = sem.op_read(0)
+
+    intrinsic = sem.module.get_intrinsic_declaration(lookup_intrinsic_id("llvm.bswap"), [value.type])
+    result = sem.ir.call(intrinsic, [value])
+    sem.op_write(0, sem.resize_int(result, sem.i16) if op.size == 2 else result)
 
 @semantic
 def xchg(sem: Semantics):

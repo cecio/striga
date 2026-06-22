@@ -394,10 +394,48 @@ def syscall(sem: Semantics):
 
 
 @semantic
+def stc(sem: Semantics):
+    sem.flag_write("cf", sem.i1.constant(1))
+
+
+@semantic
+def clc(sem: Semantics):
+    sem.flag_write("cf", sem.i1.constant(0))
+
+
+@semantic
+def int_(sem: Semantics):
+    sem.ir.ret_void()
+    return []
+
+
+@semantic
+def cmc(sem: Semantics):
+    sem.flag_write("cf", bool_not(sem, sem.flag_read("cf")))
+
+
+@semantic
+def int3(sem: Semantics):
+    sem.ir.ret_void()
+    return []
+@semantic
 def nop(sem: Semantics):
     pass
 
 
 @semantic
 def pause(sem: Semantics):
+    pass
+@semantic
+def lfence(sem: Semantics):
+    pass
+
+
+@semantic
+def mfence(sem: Semantics):
+    pass
+
+
+@semantic
+def sfence(sem: Semantics):
     pass
